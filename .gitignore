@@ -6,6 +6,7 @@
 !/files_web/
 !/files_backend/
 !/.gitignore
+!/README.md
 
 # ==============================
 # files_backend - vynech runtime/user data a secrets

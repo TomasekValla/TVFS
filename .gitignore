@@ -1,0 +1,70 @@
+# ==============================
+# Defaultně ignoruj VŠECHNO v /DATA
+# (muj_web, AppData, Media, Gallery, Documents, Downloads, Syncthing markery...)
+# ==============================
+/*
+!/files_web/
+!/files_backend/
+!/.gitignore
+
+# ==============================
+# files_backend - vynech runtime/user data a secrets
+# ==============================
+files_backend/node_modules/
+files_backend/.env
+files_backend/.env.*
+files_backend/nohup.out
+files_backend/battery/sessions/
+files_backend/battery/dataset.json
+files_backend/protected_storage/
+files_backend/temp_chunks/
+files_backend/storage/
+files_backend/files_web/
+files_backend/twc/data/
+files_backend/moneygame/moneygame_state.json
+
+# ==============================
+# files_web - vynech uploadnutá/generovaná data
+# ==============================
+files_web/files/
+files_web/logs/
+files_web/users/
+files_web/file_registry.json
+files_web/funfacts.json
+files_web/fonts/
+
+# TWC chat appka - samostatný projekt, nesouvisí s TVFS
+files_backend/twc/
+files_web/chat/
+
+# Osobní/nesouvisející nástroje - backend
+files_backend/battery.js
+files_backend/battery/
+files_backend/spotify.js
+files_backend/moneyGame.js
+files_backend/moneygame/
+files_backend/debug_login.js
+files_backend/speedtest.js
+files_backend/nohup.out
+
+# Osobní/nesouvisející nástroje - frontend
+files_web/anilist.html
+files_web/battery.html
+
+# Staré/testovací upload varianty - jen upload.html je live
+files_web/oldupload.html
+files_web/uploadtvfs.html
+files_web/uploadtesting.html
+files_web/uploadcn.html
+files_web/uploadjp.html
+files_web/ut1.html
+files_web/ut2.html
+files_web/ut3.html
+files_web/ut4.html
+files_web/ut5.html
+
+# Install skripty - k ničemu teď
+files_web/get.html
+files_web/get/
+files_web/install-linux.sh
+files_web/install-windows.ps1

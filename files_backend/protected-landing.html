@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TVFS — Protected Share</title>
+<style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@600;700&family=JetBrains+Mono:wght@500;600&display=swap');
+    :root{
+        --bg:#03070a; --card:rgba(28,32,42,0.38); --border:rgba(255,255,255,0.14); --text:#ffffff; --muted:#9aa6bd;
+        --accent:#b083ff; --danger:#ff6b6b; --ok:#2fffc4;
+    }
+    *{box-sizing:border-box;}
+    body{ margin:0; min-height:100vh; background-color:var(--bg);
+        background-image: radial-gradient(ellipse 80% 60% at 20% -10%, rgba(132, 85, 255, 0.18), transparent), radial-gradient(ellipse 70% 50% at 100% 110%, rgba(0, 230, 189, 0.12), transparent);
+        color:var(--text);
+        font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+        display:flex; align-items:flex-start; justify-content:center; padding:40px 24px; }
+    h1{ font-family:'Space Grotesk','Inter',sans-serif; }
+    .shell{ width:100%; max-width:560px; }
+    .card{ background:var(--card); border:1px solid var(--border); border-radius:16px;
+        backdrop-filter:blur(20px) saturate(150%); -webkit-backdrop-filter:blur(20px) saturate(150%);
+        box-shadow:0 30px 70px -15px rgba(0,0,0,0.75);
+        padding:28px 26px; margin-bottom:16px; }
+    .lock{ font-size:2rem; text-align:center; margin-bottom:8px; }
+    h1{ font-size:1.1rem; margin:0 0 4px; text-align:center; }
+    .sub{ color:var(--muted); font-size:0.85rem; margin-bottom:20px; text-align:center; }
+    .field{ text-align:left; margin-bottom:14px; }
+    label{ display:block; font-size:0.8rem; color:var(--muted); margin-bottom:6px; }
+    input{ width:100%; padding:11px 12px; border-radius:8px; border:1px solid var(--border); background:#0d0d0d; color:var(--text); font-size:0.95rem; }
+    input:focus{ outline:none; border-color:var(--accent); }
+    button{ width:100%; padding:12px; border-radius:8px; border:none; background:var(--accent); color:#04101c; font-weight:600; font-size:0.95rem; cursor:pointer; margin-top:6px; }
+    button:disabled{ opacity:0.5; cursor:default; }
+    .msg{ font-size:0.85rem; margin-top:12px; min-height:1.2em; }
+    .msg.error{ color:var(--danger); }
+    .hidden{ display:none !important; }
+    .folder-group{ margin-bottom:14px; }
+    .folder-label{ font-size:0.75rem; color:var(--muted); text-transform:uppercase; letter-spacing:0.06em; margin-bottom:6px; }
+    .file-row{ display:flex; flex-wrap:wrap; align-items:center; gap:8px 12px; padding:11px 12px; border:1px solid var(--border); border-radius:10px; margin-bottom:6px; background:#0d0d0d; }
+    .file-name{ flex:1 1 100%; min-width:0; font-size:0.88rem; overflow-wrap:break-word; word-break:break-word; }
+    .file-size{ font-size:0.75rem; color:var(--muted); margin-right:auto; }
+    .file-row button{ width:auto; padding:7px 12px; font-size:0.78rem; margin:0; flex:0 0 auto; }
+    .sub-header{ display:flex; justify-content:space-between; align-items:center; margin-bottom:14px; }
+
+    /* "Stay logged in?" popup — same pattern as upload.html's cookie
+       picker, shown after credentials are verified, not before. */
+    .stay-overlay{ position:fixed; inset:0; background:rgba(3,7,10,0.72); backdrop-filter:blur(4px);
+        display:flex; align-items:center; justify-content:center; z-index:1000; opacity:0; pointer-events:none; transition:opacity 0.15s; }
+    .stay-overlay.visible{ opacity:1; pointer-events:auto; }
+    .stay-card{ background:var(--card); border:1px solid var(--border); border-radius:16px;
+        backdrop-filter:blur(20px) saturate(150%); -webkit-backdrop-filter:blur(20px) saturate(150%);
+        box-shadow:0 30px 70px -15px rgba(0,0,0,0.75); padding:28px 26px; max-width:360px; width:90%; text-align:center; }
+    .stay-card h3{ margin:0 0 8px; font-family:'Space Grotesk','Inter',sans-serif; font-size:1.05rem; }
+    .stay-card p{ color:var(--muted); font-size:0.85rem; margin:0 0 18px; }
+    .stay-yes-btn{ width:100%; padding:12px; border-radius:8px; border:none; background:var(--accent); color:#04101c; font-weight:600; font-size:0.92rem; cursor:pointer; margin-bottom:8px; }
+    .stay-no-btn{ width:100%; padding:11px; border-radius:8px; border:1px solid var(--border); background:transparent; color:var(--muted); font-size:0.85rem; cursor:pointer; }
+</style>
+</head>
+<body>
+<div class="shell">
+<div class="card" id="shell">
+    <div class="lock">🔑</div>
+    <h1 id="titleText">Protected Share</h1>
+    <div class="sub" id="subText">Checking link…</div>
+
+    <div id="gateStep" class="hidden">
+        <div class="field"><label>TVFS username</label><input type="text" id="gateUsername" autocomplete="username"></div>
+        <div class="field"><label>TVFS password</label><input type="password" id="gatePassword" autocomplete="current-password"></div>
+        <button id="gateLoginBtn">Log in</button>
+        <div class="msg" id="gateMsg"></div>
+    </div>
+</div>
+
+<div id="fileListCard" class="card hidden">
+    <div class="sub-header">
+        <div class="sub" id="fileListSub" style="margin:0;"></div>
+        <button id="downloadAllBtn" style="width:auto; padding:8px 14px; font-size:0.8rem; margin:0;">Download all</button>
+    </div>
+    <div id="folderTree"></div>
+</div>
+
+<div class="stay-overlay" id="stayOverlay">
+    <div class="stay-card">
+        <h3>✅ Password Verified</h3>
+        <p>Stay logged in on this device? You can log out any time from the main upload page.</p>
+        <button class="stay-yes-btn" id="stayYesBtn">Yes, stay logged in</button>
+        <button class="stay-no-btn" id="stayNoBtn">No, just this session</button>
+    </div>
+</div>
+</div>
+
+<script>
+(function(){
+    const API = '/api/protected';
+    const shareId = __SHARE_ID_JSON__;
+
+    const el = id => document.getElementById(id);
+    const show = id => el(id).classList.remove('hidden');
+    const hide = id => el(id).classList.add('hidden');
+    const setMsg = (id, text, kind) => { const n = el(id); n.textContent = text || ''; n.className = 'msg' + (kind ? ' ' + kind : ''); };
+
+    let meta = null;
+
+    async function boot() {
+        try {
+            const res = await fetch(`${API}/${shareId}/meta`);
+            if (!res.ok) throw new Error((await res.json()).error || 'Not found');
+            meta = await res.json();
+        } catch (e) {
+            el('titleText').textContent = 'Link unavailable';
+            el('subText').textContent = e.message || 'This share does not exist or has expired.';
+            return;
+        }
+
+        el('subText').textContent = `${meta.fileCount} file${meta.fileCount === 1 ? '' : 's'} — log in with your TVFS account to access them.`;
+
+        // Try the existing tvfs_token session cookie silently before
+        // showing the gate — same cookie the rest of the site uses, sent
+        // automatically, nothing to read or store on our end.
+        try {
+            const res = await fetch(`${API}/${shareId}/login`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify({})
+            });
+            if (res.ok) {
+                renderFileList();
+                hide('shell');
+                show('fileListCard');
+                return;
+            }
+        } catch (e) { /* fall through to gate */ }
+
+        show('gateStep');
+    }
+
+    el('gateLoginBtn').onclick = async () => {
+        setMsg('gateMsg', '');
+        const username = el('gateUsername').value.trim();
+        const password = el('gatePassword').value;
+        if (!username || !password) return setMsg('gateMsg', 'Enter both fields', 'error');
+        el('gateLoginBtn').disabled = true;
+        try {
+            const res = await fetch(`${API}/${shareId}/login`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
+                body: JSON.stringify({ username, password })
+            });
+            const data = await res.json();
+            if (!res.ok) { setMsg('gateMsg', data.error || 'Login failed', 'error'); el('gateLoginBtn').disabled = false; return; }
+            renderFileList();
+            hide('shell');
+            show('fileListCard');
+            // Files are already visible at this point — the "stay logged
+            // in?" choice is a separate, non-blocking step on top, exactly
+            // like the main upload page's flow (verify first, then ask).
+            // /login already set a 24h session cookie on success; this
+            // popup only decides whether to upgrade it to the 1-year one.
+            showStayLoggedInPopup(username, password);
+        } catch (e) {
+            setMsg('gateMsg', 'Network error', 'error');
+            el('gateLoginBtn').disabled = false;
+        }
+    };
+
+    function showStayLoggedInPopup(username, password) {
+        el('stayOverlay').classList.add('visible');
+        el('stayYesBtn').onclick = () => rememberLogin(username, password, true);
+        el('stayNoBtn').onclick = () => rememberLogin(username, password, false);
+    }
+
+    // Upgrades the session cookie /login already set to the persistent
+    // 1-year one via the exact same endpoint the main upload page uses —
+    // "yes" here means the next TVFS Users Only share (or the main upload
+    // page itself) already recognizes this person too, not just this one
+    // share, and not just until the browser closes.
+    async function rememberLogin(username, password, remember) {
+        el('stayOverlay').classList.remove('visible');
+        if (!remember) return;
+        try {
+            await fetch('/api/auth', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include',
+                body: JSON.stringify({ username, password, remember: true })
+            });
+        } catch (e) { /* the share access itself already succeeded regardless — this is best-effort */ }
+    }
+
+    // No token, no query string — access is gated purely by the tvfs_token
+    // session cookie, sent automatically on every same-origin request.
+    function fileUrl(index) {
+        return `${API}/${shareId}/file/${index}`;
+    }
+
+    function formatBytes(bytes) {
+        if (bytes === 0) return '0 B';
+        const k = 1024, sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+        const i = Math.floor(Math.log(bytes) / Math.log(k));
+        return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+    }
+
+    function renderFileList() {
+        el('fileListSub').textContent = `${meta.files.length} file${meta.files.length === 1 ? '' : 's'}`;
+
+        // Group by folder (relativePath's directory portion), "" = root.
+        const groups = {};
+        meta.files.forEach(f => {
+            const parts = f.relativePath.split('/');
+            const folder = parts.length > 1 ? parts.slice(0, -1).join('/') : '';
+            const name = parts[parts.length - 1];
+            (groups[folder] = groups[folder] || []).push({ ...f, name });
+        });
+
+        const tree = el('folderTree');
+        tree.innerHTML = '';
+        Object.keys(groups).sort().forEach(folder => {
+            const group = document.createElement('div');
+            group.className = 'folder-group';
+            if (folder) {
+                const label = document.createElement('div');
+                label.className = 'folder-label';
+                label.textContent = '📁 ' + folder;
+                group.appendChild(label);
+            }
+            groups[folder].forEach(f => {
+                const row = document.createElement('div');
+                row.className = 'file-row';
+                const toolLabel = f.category === 'audio' ? '🎵 Player'
+                    : (f.category === 'text' || f.category === 'md') ? '📖 Reader'
+                    : null;
+                row.innerHTML = `
+                    <span class="file-name">${escapeHtml(f.name)}</span>
+                    <span class="file-size">${formatBytes(f.size)}</span>
+                    ${toolLabel ? `<button class="tool-btn">${toolLabel}</button>` : ''}
+                    <button class="dl-btn">Download</button>
+                `;
+                row.querySelector('.dl-btn').onclick = () => {
+                    const a = document.createElement('a');
+                    a.href = fileUrl(f.index);
+                    a.download = f.name;
+                    document.body.appendChild(a);
+                    a.click();
+                    a.remove();
+                };
+                // Reader/player pages carry no secret — access is gated by
+                // the tvfs_token session cookie on the /file/:index fetch
+                // inside them, same as the download button below. That
+                // means these links also work directly (no landing-page
+                // click-through) for anyone already logged in.
+                if (toolLabel) {
+                    row.querySelector('.tool-btn').onclick = () => {
+                        window.open(f.toolLink, '_blank');
+                    };
+                }
+                group.appendChild(row);
+            });
+            tree.appendChild(group);
+        });
+    }
+
+    el('downloadAllBtn').onclick = async () => {
+        el('downloadAllBtn').disabled = true;
+        for (const f of meta.files) {
+            const a = document.createElement('a');
+            a.href = fileUrl(f.index);
+            a.download = f.relativePath.split('/').pop();
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            await new Promise(r => setTimeout(r, 400));
+        }
+        el('downloadAllBtn').disabled = false;
+    };
+
+    function escapeHtml(s) {
+        return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    }
+
+    boot();
+})();
+</script>
+</body>
+</html>

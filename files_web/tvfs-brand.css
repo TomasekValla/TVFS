@@ -1,0 +1,142 @@
+/* TVFS shared branding — pulled from upload.html's real :root palette.
+   Loaded by every generated page (encrypted/vault/protected/pair/dashboard)
+   so they actually look like part of the same product instead of a
+   generic dark-mode template. */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@600;700&family=JetBrains+Mono:wght@500;600&display=swap');
+
+:root {
+    --bg-color: #03070a;
+    --bg-gradient:
+        radial-gradient(ellipse 80% 60% at 20% -10%, rgba(132, 85, 255, 0.18), transparent),
+        radial-gradient(ellipse 70% 50% at 100% 110%, rgba(0, 230, 189, 0.12), transparent);
+    --glass-bg: rgba(28, 32, 42, 0.38);
+    --glass-border: rgba(255, 255, 255, 0.14);
+    --text-main: #ffffff;
+    --text-secondary: #9aa6bd;
+    --accent-primary: #b083ff;
+    --accent-secondary: #2fffc4;
+    --accent-gradient: linear-gradient(135deg, #00e6bd 0%, #8455ff 100%);
+    --input-bg: rgba(15, 12, 28, 0.35);
+    --shadow-xl: 0 30px 70px -15px rgba(0, 0, 0, 0.75), 0 0 0 1px rgba(255,255,255,0.05) inset;
+    --status-good: #2fffc4;
+    --status-warn: #ffd866;
+    --status-bad: #ff6b6b;
+}
+
+* { box-sizing: border-box; }
+
+body {
+    margin: 0; min-height: 100vh;
+    background-color: var(--bg-color);
+    background-image: var(--bg-gradient);
+    color: var(--text-main);
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    display: flex; align-items: flex-start; justify-content: center;
+    padding: 40px 20px;
+}
+
+.tvfs-shell { width: 100%; max-width: 520px; }
+
+.tvfs-card {
+    background: var(--glass-bg);
+    backdrop-filter: blur(20px) saturate(150%);
+    -webkit-backdrop-filter: blur(20px) saturate(150%);
+    border: 1px solid var(--glass-border);
+    border-radius: 20px;
+    box-shadow: var(--shadow-xl);
+    padding: 28px 26px;
+    margin-bottom: 16px;
+}
+
+.tvfs-card h1 {
+    font-family: 'Space Grotesk', 'Inter', sans-serif;
+    font-size: 1.15rem;
+    margin: 0 0 4px;
+    text-align: center;
+}
+
+.tvfs-sub { color: var(--text-secondary); font-size: 0.85rem; margin-bottom: 20px; text-align: center; line-height: 1.5; }
+.tvfs-icon { font-size: 2rem; text-align: center; margin-bottom: 8px; }
+
+.tvfs-field { text-align: left; margin-bottom: 14px; }
+.tvfs-field label {
+    display: block; font-size: 0.72rem; font-weight: 600; color: var(--text-secondary);
+    text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 6px;
+}
+.tvfs-field input {
+    width: 100%; padding: 13px 14px; border-radius: 12px;
+    background: var(--input-bg); border: 1px solid var(--glass-border);
+    color: var(--text-main); font-size: 0.92rem; font-family: inherit;
+}
+.tvfs-field input:focus { outline: none; border-color: var(--accent-primary); box-shadow: 0 0 0 3px rgba(176, 131, 255, 0.15); }
+.tvfs-field input::placeholder { color: var(--text-secondary); opacity: 0.7; }
+
+.tvfs-btn {
+    width: 100%; padding: 13px; border-radius: 12px; border: none;
+    background: var(--accent-gradient); color: #04101c;
+    font-weight: 700; font-size: 0.92rem; cursor: pointer; margin-top: 6px;
+    font-family: 'Inter', sans-serif; transition: transform 0.12s, opacity 0.12s;
+}
+.tvfs-btn:hover:not(:disabled) { transform: translateY(-1px); }
+.tvfs-btn:disabled { opacity: 0.5; cursor: default; transform: none; }
+.tvfs-btn.tvfs-btn-secondary { background: transparent; border: 1px solid var(--glass-border); color: var(--text-main); }
+.tvfs-btn.tvfs-btn-danger { background: var(--status-bad); color: #fff; }
+.tvfs-btn.tvfs-btn-ghost { background: transparent; border: 1px solid var(--glass-border); color: var(--text-secondary); }
+
+.tvfs-msg { font-size: 0.82rem; margin-top: 12px; min-height: 1.2em; line-height: 1.4; }
+.tvfs-msg.error { color: var(--status-bad); }
+.tvfs-msg.ok { color: var(--status-good); }
+.tvfs-msg.warn { color: var(--status-warn); }
+.hidden { display: none !important; }
+
+.tvfs-code {
+    font-family: 'JetBrains Mono', monospace; font-size: 2.2rem; font-weight: 600;
+    letter-spacing: 0.3em; margin: 16px 0; color: var(--accent-secondary); text-align: center;
+}
+
+.tvfs-mono { font-family: 'JetBrains Mono', monospace; }
+
+.tvfs-link {
+    background: var(--input-bg); backdrop-filter: blur(14px);
+    padding: 13px 14px; border-radius: 12px; margin: 12px 0;
+    font-family: 'JetBrains Mono', monospace; color: var(--accent-secondary);
+    font-size: 0.85rem; word-break: break-all; border: 1px solid var(--glass-border);
+    text-decoration: none; display: block; cursor: pointer;
+}
+.tvfs-link:hover { border-color: var(--accent-primary); }
+
+.tvfs-copy-pill {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 9px 16px; border-radius: 10px; border: 1px solid var(--glass-border);
+    background: var(--input-bg); color: var(--text-main); font-size: 0.8rem;
+    font-weight: 600; cursor: pointer; font-family: 'Inter', sans-serif;
+    transition: background 0.15s, border-color 0.15s;
+}
+.tvfs-copy-pill:hover { border-color: var(--accent-primary); }
+.tvfs-copy-pill.copied { background: rgba(47,255,196,0.15); border-color: var(--accent-secondary); color: var(--accent-secondary); }
+
+.tvfs-spinner {
+    width: 22px; height: 22px; border: 3px solid var(--glass-border); border-top-color: var(--accent-secondary);
+    border-radius: 50%; margin: 16px auto; animation: tvfs-spin 0.8s linear infinite;
+}
+@keyframes tvfs-spin { to { transform: rotate(360deg); } }
+
+.tvfs-pop { animation: tvfs-pop 0.45s cubic-bezier(0.34,1.56,0.64,1); }
+@keyframes tvfs-pop { 0% { transform: scale(0.4); opacity: 0; } 100% { transform: scale(1); opacity: 1; } }
+
+.tvfs-file-row {
+    display: flex; align-items: center; gap: 12px; padding: 12px 14px;
+    border: 1px solid var(--glass-border); border-radius: 12px; margin-bottom: 8px;
+    background: var(--input-bg);
+}
+.tvfs-file-name { flex: 1; font-size: 0.88rem; word-break: break-all; }
+.tvfs-file-meta { font-size: 0.75rem; color: var(--text-secondary); }
+.tvfs-file-row button { width: auto; padding: 7px 13px; font-size: 0.78rem; margin: 0; }
+
+.tvfs-tri-switch { display: inline-flex; border: 1px solid var(--glass-border); border-radius: 10px; overflow: hidden; }
+.tvfs-tri-btn {
+    padding: 8px 14px; font-size: 0.78rem; font-weight: 600; background: transparent;
+    color: var(--text-secondary); border: none; cursor: pointer; font-family: 'Inter', sans-serif;
+    border-radius: 0; margin: 0; width: auto;
+}
+.tvfs-tri-btn.active { background: var(--accent-gradient); color: #04101c; }

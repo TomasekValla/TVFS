@@ -1,0 +1,26 @@
+services:
+  backend:
+    build: ../files_backend
+    container_name: files-backend
+    restart: unless-stopped
+    networks:
+      - files-network
+    ports:
+      - "14150:14150"   # jen pro lokální debug, Nginx bude volat uvnitř sítě
+
+  nginx:
+    image: nginx:alpine
+    container_name: files-nginx
+    depends_on:
+      - backend
+    networks:
+      - files-network
+    volumes:
+      - /DATA/files_web:/usr/share/nginx/html:ro
+      - /DATA/files_web/conf.d:/etc/nginx/conf.d:ro
+    ports:
+      - "80:80"
+
+networks:
+  files-network:
+    driver: bridge

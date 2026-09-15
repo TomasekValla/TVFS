@@ -1,0 +1,426 @@
+================================================================================
+TVFS — REMOVAL OF ENCRYPTED SHARING + PAIRING (2026-08)
+================================================================================
+Written for: a future developer or AI picking this project back up.
+Decision made by: Tomasek, 2026-08. Reason: both features were unstable
+(Encrypted Sharing had a client-side "register undefined" bug on upload;
+Pairing had degraded performance and broken session/token handling) and
+were adding debugging surface Tomasek didn't want to carry anymore. Rather
+than keep patching them live, they were cut out entirely and documented
+here so they can be rebuilt cleanly later if wanted, instead of resumed
+mid-repair.
+
+WHAT SURVIVED: "TVFS Users Only" (protectedShare.js, /api/protected/*) —
+a standalone, non-encrypted, TVFS-login-gated sharing mode. Fully intact
+and working. This is the ONLY one of the three original sharing modes
+still live.
+
+WHAT'S GONE: Encrypted Sharing (client-side AES-256-GCM + OPAQUE PAKE
+password auth) and Pairing (owner approves each viewer interactively,
+existed as sub-features of BOTH Encrypted Sharing and TVFS Users Only).
+
+--------------------------------------------------------------------------------
+1. FILE-BY-FILE MAP
+--------------------------------------------------------------------------------
+
+  /DATA/files_backend/index.js
+      STATUS: kept, edited.
+      Removed: `const { router: encryptedShareRoutes } = require('./encryptedShare');`
+      and `app.use('/api/encrypted', encryptedShareRoutes);`.
+      Everything else unchanged (protectedShareRoutes / '/api/protected'
+      is still mounted — that's TVFS Users Only, staying).
+
+  /DATA/files_backend/upload.js
+      STATUS: kept, unrelated fix only (schedulePendingStyledLink thumbnail
+      crash guard). Never had any encrypted/pairing code of its own —
+      encryptedShare.js and protectedShare.js both only *require* it for
+      `authenticateRequest`.
+
+  /DATA/files_backend/protectedShare.js
+      STATUS: kept, surgically edited — Pairing removed, TVFS Users Only
+      kept. See section 2 below for the exact code that was cut.
+
+  /DATA/files_backend/encryptedShare.js  (95KB, ~1190 lines)
+      STATUS: DELETE FROM SERVER. Archive a copy first if you want it back.
+      Implemented the ENTIRE Encrypted Sharing feature: single-file and
+      multi-file "vault" uploads, OPAQUE registration/login (register-init,
+      login-init, login-finish for both single files and vaults), chunked
+      encrypted upload (chunk-init/chunk-finalize/chunk-meta/chunk/:index),
+      its OWN separate pairing implementation (pair/request, pair/status,
+      pairing/inbox, pairing/:requestId/decide — yes, a second, independent
+      pairing system from protectedShare.js's, never unified), and the
+      expiry sweep (sweepExpired, called from cleanup.js).
+      Route map (path relative to /api/encrypted):
+        GET  /dont-trust-verify.txt
+        POST /:id/opaque/register-init
+        POST /:id/upload  (main single-file encrypted upload, chunked)
+        POST /:id/chunk-init
+        POST /:id/chunk-finalize
+        GET  /:id/chunk-meta
+        GET  /:id/chunk/:index
+        POST /vault/:id/opaque/register-init
+        POST /vault/:id/upload  (multi-file vault upload)
+        GET  /vault/:id/meta
+        POST /vault/:id/login
+        GET  /vault/:id/keychain
+        GET  /vault/:id/file/:blobIndex
+        POST /:id/opaque/login-init
+        POST /:id/opaque/login-finish
+        POST /vault/:id/opaque/login-init
+        POST /vault/:id/opaque/login-finish
+        GET  /:id/meta
+        POST /:id/login
+        POST /:id/pair/request          <- encryptedShare's OWN pairing
+        GET  /:id/pair/status/:requestId
+        POST /pairing/inbox
+        POST /pairing/:requestId/decide
+        GET  /:id/file
+
+  /DATA/files_backend/opaqueServer.js  (6.4KB)
+      STATUS: DELETE FROM SERVER (or archive). Server-side half of the
+      OPAQUE PAKE protocol (@cloudflare/opaque-ts). ONLY consumer was
+      encryptedShare.js's register/login-init/login-finish routes above.
+      Not used by anything else — safe to remove entirely once
+      encryptedShare.js is gone. Holds server key material at
+      protected_storage/opaque_server_keys.json — losing that file (if you
+      ever bring this back from a different key) makes every previously
+      OPAQUE-registered file's password permanently unverifiable. If you
+      archive this feature "for real" (not just deleting the route), keep
+      that key file too, in case any live Encrypted Sharing links still
+      exist and someone comes back for them before they naturally expire.
+
+  /DATA/files_backend/encryptedCrypto.js  (21KB) — served as /encryptedCrypto.js
+      STATUS: DELETE FROM SERVER (or archive). Client-side crypto: exposed
+      as `window.TVFSCrypto`. Two halves:
+        - AES-256-GCM file encrypt/decrypt (Web Crypto SubtleCrypto)
+        - `TVFSCrypto.opaque.{register,login}` — wraps opaque-client-bundle.js
+          (@cloudflare/opaque-ts client) into the register/login calls that
+          upload.html's uploadEncryptedSingle/uploadEncryptedVault used to
+          make (see section 3 below — this is where the reported "Cannot
+          read properties of undefined (reading 'register')" bug lived;
+          root cause was never fully confirmed, leading suspects were (a)
+          stale service-worker cache serving an old encryptedCrypto.js
+          without the .opaque property, or (b) Cloudflare Rocket Loader —
+          upload.html had FOUR separate Rocket Loader script injections
+          with different data-cf-settings hashes, a real anomaly worth
+          checking in the Cloudflare dashboard for duplicate/stacked page
+          rules, since Rocket Loader is known to reorder script execution
+          and TVFSCrypto.opaque depends on opaque-client-bundle.js having
+          already run).
+
+  /DATA/files_backend/opaque-client-bundle.js  (86KB) — served as
+  /opaque-client-bundle.js
+      STATUS: DELETE FROM SERVER (or archive). Third-party @cloudflare/
+      opaque-ts client library, bundled for the browser. Only consumer was
+      encryptedCrypto.js's opaque helpers above.
+
+  /DATA/files_backend/encrypted-landing.html  (19.8KB)
+      STATUS: DELETE FROM SERVER (or archive). Per-file landing/unlock page
+      template for a single encrypted file — filled in and written to disk
+      by encryptedShare.js at upload time (same pattern as protected-
+      landing.html). Loads opaque-client-bundle.js + encryptedCrypto.js.
+
+  /DATA/files_backend/vault-landing.html  (15.5KB)
+      STATUS: DELETE FROM SERVER (or archive). Same as encrypted-landing.html
+      but for multi-file "vault" uploads (encryptedShare.js's /vault/*
+      routes). Loads opaque-client-bundle.js + encryptedCrypto.js.
+
+  /DATA/files_backend/protected-pair.html  (11.4KB)
+      STATUS: DELETE FROM SERVER (or archive). Viewer-facing "request
+      access" / pairing-code page for protectedShare.js's (now-removed)
+      Pairing mode. Used tvfs-gate.js only, no OPAQUE/crypto dependency.
+
+  /DATA/files_backend/protected-dashboard.html  (11.4KB)
+      STATUS: DELETE FROM SERVER (or archive). Owner-facing pairing
+      approve/ban/kick/ignore dashboard for protectedShare.js's (now-
+      removed) Pairing mode.
+
+  /DATA/files_web/pairing-dashboard.html
+      STATUS: check and probably DELETE — appears to be an older/stray
+      duplicate of protected-dashboard.html living in files_web's root
+      instead of being generated per-share into files/protected/pages/
+      like the real one was. Wasn't referenced by any code path found in
+      this pass; worth confirming nothing links to it before deleting.
+
+  /DATA/files_web/files/protected/pages/pair_*.html and dashboard_*.html
+      STATUS: DELETE (generated files, one pair per pairing-enabled share
+      that existed at removal time). protectedShare.js's sweepExpired()
+      will now also clean up any leftover `dashboardPagePath` it finds on
+      an expiring old registry entry, but pages for shares that AREN'T
+      expiring soon will sit there unused until you clear them manually.
+
+  /DATA/files_backend/protected_storage/protected_registry.json
+      STATUS: kept, tolerant read. May still contain shares with
+      `pairingEnabled: true` and `dashboardPagePath` set, plus old
+      `pairingRequests` / `bans` top-level keys, from before removal. The
+      new protectedShare.js reads this file tolerantly (only pulls out
+      `.shares`, ignores the rest) rather than requiring a migration.
+      Effect: any share that was pairing-enabled keeps existing as a
+      registry entry and its direct link (if it has a plain login gate)
+      still works; ONLY the pairing flow itself (the pair_*.html /
+      dashboard_*.html pages, the /pair/* API routes) is gone, so a
+      pairing-only share with no login-based access becomes effectively
+      unreachable. This was a known, accepted side effect of the removal.
+
+  /DATA/files_backend/files_web/encrypted_private/  (e_*/manifest.json)
+      STATUS: orphaned data directory (encrypted file blobs / vault
+      manifests actually live under protected_storage per encryptedShare.js's
+      own design notes, but this local dir under files_backend/files_web/
+      showed up in your tree listing too — worth a manual check before
+      deleting, in case it's still-live encrypted data rather than a
+      leftover empty scaffold).
+
+  /DATA/files_backend/upload.html  (332KB)
+      STATUS: kept, MINIMALLY edited (see section 3). The Encrypted Sharing
+      and Pairing UI code (~700+ lines of JS: mode selection, upload
+      functions, result rendering) was NOT deleted from this file — it was
+      made unreachable instead (entry points hidden/disabled). Reasoning:
+      this is a single 332KB monolithic script with a lot of shared state;
+      hand-deleting a few hundred scattered lines without a test suite
+      risks silently breaking something TVFS Users Only also depends on.
+      Hiding the entry points achieves the same practical outcome (nobody
+      can trigger Encrypted Sharing or Pairing anymore, and their backend
+      routes don't exist even if they tried) with far lower risk. See
+      section 3 for exactly what was changed and what was deliberately
+      left in place as dead code.
+
+--------------------------------------------------------------------------------
+2. EXACT PAIRING CODE REMOVED FROM protectedShare.js
+--------------------------------------------------------------------------------
+(TVFS Users Only's own code — directories, registry, upload, /meta,
+/login, /file/:index — is UNCHANGED and not reproduced here; see the
+current live file for that.)
+
+--- Template loading (removed) ---
+
+    const PROTECTED_PAIR_TEMPLATE_PATH = path.join(__dirname, 'protected-pair.html');
+    let PROTECTED_PAIR_TEMPLATE = null;
+    try { PROTECTED_PAIR_TEMPLATE = fs.readFileSync(PROTECTED_PAIR_TEMPLATE_PATH, 'utf8'); }
+    catch (e) { console.error('❌ [PROTECTED SHARE] Could not load protected-pair.html template:', e.message); }
+    function buildProtectedPairHtml(shareId) {
+        if (!PROTECTED_PAIR_TEMPLATE) throw new Error('protected-pair.html template not loaded');
+        return PROTECTED_PAIR_TEMPLATE.replace('__SHARE_ID_JSON__', JSON.stringify(shareId));
+    }
+
+    const PROTECTED_DASHBOARD_TEMPLATE_PATH = path.join(__dirname, 'protected-dashboard.html');
+    let PROTECTED_DASHBOARD_TEMPLATE = null;
+    try { PROTECTED_DASHBOARD_TEMPLATE = fs.readFileSync(PROTECTED_DASHBOARD_TEMPLATE_PATH, 'utf8'); }
+    catch (e) { console.error('❌ [PROTECTED SHARE] Could not load protected-dashboard.html template:', e.message); }
+    function buildProtectedDashboardHtml(shareId) {
+        if (!PROTECTED_DASHBOARD_TEMPLATE) throw new Error('protected-dashboard.html template not loaded');
+        return PROTECTED_DASHBOARD_TEMPLATE.replace('__SHARE_ID_JSON__', JSON.stringify(shareId));
+    }
+
+--- Inside POST /upload (removed branch — original had this instead of
+    always building the plain landing page) ---
+
+    const pairingEnabled = req.body.pairingEnabled === 'true';
+    ...
+    let pagePath, dashboardPagePath, link, dashboardLink;
+    if (pairingEnabled) {
+        const pairFilename = `pair_${shareId}.html`;
+        const dashFilename = `dashboard_${shareId}.html`;
+        pagePath = path.join(SHARE_PAGES_DIR, pairFilename);
+        dashboardPagePath = path.join(SHARE_PAGES_DIR, dashFilename);
+        fs.writeFileSync(pagePath, buildProtectedPairHtml(shareId));
+        fs.writeFileSync(dashboardPagePath, buildProtectedDashboardHtml(shareId));
+        link = `https://files.tomasekvalla.cz/files/protected/pages/${pairFilename}`;
+        dashboardLink = `https://files.tomasekvalla.cz/files/protected/pages/${dashFilename}`;
+    } else {
+        const pageFilename = `${shareId}.html`;
+        pagePath = path.join(SHARE_PAGES_DIR, pageFilename);
+        fs.writeFileSync(pagePath, buildProtectedLandingHtml(shareId));
+        link = `https://files.tomasekvalla.cz/files/protected/pages/${pageFilename}`;
+    }
+    // registry.shares[shareId] also stored: dashboardPagePath, pairingEnabled
+    // response also included: dashboardLink
+
+--- Pairing identity + ban logic (removed) ---
+
+    const PAIR_CODE_TTL_MS = 5 * 60 * 1000;
+    function generatePairCode() { return String(crypto.randomInt(0, 1000000)).padStart(6, '0'); }
+
+    function isBanned(shareId, identity) {
+        const bans = registry.bans[shareId];
+        if (!bans) return false;
+        return bans.some(b =>
+            (identity.username && b.username === identity.username) ||
+            (identity.deviceId && b.deviceId === identity.deviceId)
+        );
+    }
+
+--- POST /:id/pair/start (removed route) ---
+    Viewer requests a pairing code. deviceId required; username/password
+    optional (falls back to "Anonym" + deviceId). Checked isBanned() first.
+    Created a registry.pairingRequests[requestId] entry: { requestId,
+    shareId, deviceId, username, label, code, status:'pending',
+    ownerHidden:false, createdAt, expiresAt, accessToken:null }.
+
+--- GET /:id/pair/status/:requestId (removed route) ---
+    Viewer polls this. Flips status to 'expired' if past expiresAt while
+    still 'pending'. Returns { status, accessToken (only if approved),
+    waitedMs }.
+
+--- POST /:id/pair/inbox (removed route) ---
+    Owner dashboard poll. Body {} relies on tvfs_token cookie, falls back
+    to {username,password}. STRICT: only entry.ownerUsername may call this
+    — returns 403 for any other valid TVFS login. Returns the owner's own
+    accessToken (issueAccessToken) plus the list of pending (non-hidden,
+    non-expired) requests for that share.
+
+--- POST /:id/pair/decide (removed route) ---
+    Body: { requestId, action }. action one of:
+      approve — pr.status='approved', pr.accessToken = issueAccessToken(...)
+      ignore  — pr.ownerHidden = true (viewer keeps polling 'pending' forever,
+                eventually sees 'expired' — owner just stops seeing it)
+      kick    — pr.status='kicked' (viewer can retry with a fresh code)
+      ban     — same as kick, PLUS registry.bans[shareId].push({deviceId,
+                username, bannedAt}) — permanent for that identity.
+    Also strict-owner-only, same as /pair/inbox.
+
+--- sweepExpired() (removed portion) ---
+    Also deleted entry.dashboardPagePath from disk if present, and pruned
+    registry.pairingRequests entries more than 24h past their expiresAt
+    (kept around briefly past expiry so a slow poll could still see the
+    final status instead of a 404).
+
+--- module.exports (removed keys) ---
+    None of the pairing internals were exported — pairing was entirely
+    self-contained within this file's own routes.
+
+--------------------------------------------------------------------------------
+3. FRONTEND (upload.html) — WHAT WAS TOUCHED VS. LEFT AS DEAD CODE
+--------------------------------------------------------------------------------
+
+CHANGED (4 small edits, all easy to find by searching "REMOVED (2026-08)"
+in the file):
+
+  a) Two setting-card <div>s got `style="display:none;"` added:
+     id="encryptedSharingSettingCard" and id="pairingFeatureCard".
+     (id="tvfsUsersOnlyFeatureCard" stays visible — unchanged.)
+
+  b) Two <script src> tags removed from <head>-adjacent script block:
+       <script src="/opaque-client-bundle.js"></script>
+       <script src="/encryptedCrypto.js"></script>
+     (<script src="/tvfs-gate.js"></script> was KEPT — still used by the
+     TVFS Users Only result UI's copy-to-clipboard helper.)
+
+  c) The on-load mode restoration logic changed from:
+       if (encMasterEnabled) selectTopLevelMode('encrypted');
+       else if (tvfsOnlyModeEnabled) selectTopLevelMode('tvfsOnly');
+       else if (pairingModeEnabled) selectTopLevelMode('pairing');
+       else selectTopLevelMode(null);
+     to:
+       if (tvfsOnlyModeEnabled) selectTopLevelMode('tvfsOnly');
+       else selectTopLevelMode(null);
+     — this is what stops a RETURNING visitor's stale localStorage
+     (tvfs_encrypted_sharing_enabled=1 / tvfs_pairing_mode_enabled=1) from
+     silently re-activating either removed mode on page load.
+
+  That's the entire live-behavior change. Everything below was NOT deleted
+  — it's still physically present in upload.html, just unreachable, because
+  (a) is what a real user would see now shows will show only TVFS Users
+  Only as the option available.
+
+LEFT IN PLACE AS DEAD CODE (still in upload.html, never called anymore —
+this IS the code to lift out if Encrypted Sharing/Pairing get rebuilt):
+
+  Mode-selection wiring, ~line 5795-5930 in the pre-removal file:
+    - encMasterEnabled / tvfsOnlyModeEnabled / pairingModeEnabled state
+    - selectTopLevelMode(which) — mutual-exclusion logic between the 3 modes
+    - settingSwitches.master / .tvfsOnlyMode / .pairingMode tri-switch wiring
+    - encEnabledSwitch (per-upload checkbox once Encrypted's master switch
+      is on), isEncryptedSharingChecked()
+    - encSingleUseSwitch, encTvfsOnlySwitch (Encrypted's OWN "also require
+      TVFS login" sub-option — distinct from the top-level TVFS Users Only
+      mode, see the comment at the top of that block in the file),
+      encPassModeSwitch, encRandomLenSwitch, updateEncStrengthHint(),
+      updateTvfsLoginHint()
+    - encPairingRow / encPairingSwitch / encPairingFeatureEnabled — a THIRD
+      pairing concept, apparently meant to be a Pairing sub-option nested
+      inside Encrypted Sharing's own panel (separate from both
+      protectedShare.js's Pairing AND encryptedShare.js's Pairing routes —
+      three parallel, never-unified pairing implementations existed across
+      this codebase by the end). NOTE: `encPairingFeatureEnabled` and
+      `encTvfsOnlyFeatureEnabled`, and the functions `applyMasterSettingUI`
+      and `applySubFeatureUI` that consume them, are called at the end of
+      this block but are NOT DEFINED ANYWHERE in upload.html — this throws
+      a ReferenceError at page load and silently kills every top-level
+      script statement AFTER that point (rest of the file, past roughly
+      line 5928 of ~6484). This is a pre-existing bug, unrelated to the
+      Encrypted/Pairing removal — flagged here since whoever touches this
+      block next will hit it immediately. Not fixed as part of this pass.
+
+  Upload dispatch, ~line 4384-4406:
+    els.uploadBtn click handler — checks isEncryptedSharingChecked() first
+    (→ uploadEncryptedSingle/uploadEncryptedVault), then isTvfsOnlyModeActive()
+    (→ uploadProtectedShare(files, false) — STILL LIVE, this is the kept
+    path), then isPairingModeActive() (→ uploadProtectedShare(files, true)
+    — now permanently unreachable since pairingModeEnabled can never
+    become true again), else falls through to the plain public uploadAll().
+
+  guessEncCategory(file), randomFileId() — ~line 5932-5945, small helpers
+    only used by the encrypted upload functions below.
+
+  uploadEncryptedSingle(file) — ~line 5947-6121ish. Single-file Encrypted
+    Sharing upload: builds the OPAQUE registration via
+    TVFSCrypto.opaque.register(...), AES-256-GCM-encrypts the file
+    client-side, uploads the ciphertext + registration record, shows the
+    resulting link + password.
+
+  showEncryptedResult(link, password) — ~line 6122-6136. Renders the
+    result card for an encrypted share (link + password display + TVFS-
+    gate copy-with-feedback button via tvfs-gate.js).
+
+  uploadEncryptedVault(files) — ~line 6137-6222ish. Multi-file "vault"
+    version of the above — one OPAQUE registration covering a whole
+    keychain of files.
+
+  uploadProtectedShare(files, pairingEnabled) — ~line 6244-6311. THIS
+    FUNCTION IS STILL LIVE AND USED (TVFS Users Only calls it with
+    pairingEnabled=false). Its pairingEnabled=true branch is now dead
+    code that never executes (isPairingModeActive() always returns
+    false), but was deliberately NOT stripped out of this shared function
+    — the pairingEnabled parameter and its two dead branches
+    (`form.append('pairingEnabled', ...)`, the `if (pairingEnabled &&
+    data.dashboardLink)` block, and the "(Pairing)" vs "(TVFS Users Only)"
+    title ternary) are harmless: the backend's /api/protected/upload no
+    longer reads `pairingEnabled` at all (see section 2), so even in the
+    hypothetical case this dead branch somehow got triggered again, it
+    degrades gracefully to a plain TVFS-login share with no dashboard link,
+    it does not error.
+
+  HTML markup, still present but unreachable without JS re-enabling it:
+    #encCheckboxRow, #encOptionsPanel and everything inside it (password
+    mode switch, random-length switch, custom password field, TVFS-only
+    sub-option row, Pairing sub-option row, strength/crack-time hints),
+    #protDashboardLink / #copyProtDashboardBtn / #protDashboardLinkBlock
+    (dashboard link display block inside the shared result card — still
+    physically there, just never gets `.style.display=''` set since
+    pairingEnabled is always false now).
+
+--------------------------------------------------------------------------------
+4. IF REBUILDING LATER — SUGGESTED APPROACH
+--------------------------------------------------------------------------------
+  - Encrypted Sharing and Pairing were each reasonably well-architected
+    individually (see the doc comments at the top of encryptedShare.js and
+    opaqueServer.js in the archived copies) — the instability came from
+    integration/deployment issues (stale caching or Rocket Loader script
+    ordering for the "register undefined" bug; unclear root cause never
+    fully isolated for Pairing's "performance degraded, session token link
+    doesn't work" issues), not fundamentally broken designs. A rebuild can
+    likely reuse most of the archived code close to as-is.
+  - Before reviving Pairing, pick ONE of the three parallel pairing
+    implementations that existed (protectedShare.js's, encryptedShare.js's,
+    or the never-finished encPairingRow sub-option inside Encrypted
+    Sharing's panel) rather than resurrecting all three — that fragmentation
+    was itself part of the maintenance burden.
+  - Fix the applyMasterSettingUI/applySubFeatureUI ReferenceError (section
+    3) FIRST, before rebuilding on top of that code block — right now nothing
+    past it in the script executes.
+  - Re-audit the Cloudflare Rocket Loader duplication (4 separate injected
+    instances with different data-cf-settings hashes were observed in
+    upload.html at removal time) before trusting any fix to the OPAQUE
+    "register undefined" bug — if Rocket Loader is still stacked/duplicated
+    when this comes back, the same intermittent failure will likely return.
+================================================================================

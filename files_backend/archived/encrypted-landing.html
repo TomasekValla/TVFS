@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TVFS — Encrypted File</title>
+<style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@600;700&family=JetBrains+Mono:wght@500;600&display=swap');
+    :root{
+        --bg:#03070a; --card:rgba(28,32,42,0.38); --border:rgba(255,255,255,0.14); --text:#ffffff; --muted:#9aa6bd;
+        --accent:#b083ff; --danger:#ff6b6b; --ok:#2fffc4;
+    }
+    *{box-sizing:border-box;}
+    body{
+        margin:0; min-height:100vh; background-color:var(--bg);
+        background-image: radial-gradient(ellipse 80% 60% at 20% -10%, rgba(132, 85, 255, 0.18), transparent), radial-gradient(ellipse 70% 50% at 100% 110%, rgba(0, 230, 189, 0.12), transparent);
+        color:var(--text);
+        font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+        display:flex; align-items:center; justify-content:center; padding:24px;
+    }
+    h1{ font-family:'Space Grotesk','Inter',sans-serif; }
+    .code, .pair-code{ font-family:'JetBrains Mono',monospace; }
+    .shell{
+        width:100%; max-width:440px; background:var(--card); border:1px solid var(--border);
+        backdrop-filter:blur(20px) saturate(150%); -webkit-backdrop-filter:blur(20px) saturate(150%);
+        box-shadow:0 30px 70px -15px rgba(0,0,0,0.75);
+        border-radius:16px; padding:32px 28px; text-align:center;
+    }
+    .lock{ font-size:2.4rem; margin-bottom:8px; }
+    h1{ font-size:1.15rem; margin:0 0 4px; }
+    .sub{ color:var(--muted); font-size:0.85rem; margin-bottom:24px; }
+    .field{ text-align:left; margin-bottom:14px; }
+    label{ display:block; font-size:0.8rem; color:var(--muted); margin-bottom:6px; }
+    input{
+        width:100%; padding:11px 12px; border-radius:8px; border:1px solid var(--border);
+        background:#0d0d0d; color:var(--text); font-size:0.95rem;
+    }
+    input:focus{ outline:none; border-color:var(--accent); }
+    button{
+        width:100%; padding:12px; border-radius:8px; border:none; background:var(--accent);
+        color:#04101c; font-weight:600; font-size:0.95rem; cursor:pointer; margin-top:6px;
+    }
+    button:disabled{ opacity:0.5; cursor:default; }
+    button.secondary{ background:transparent; border:1px solid var(--border); color:var(--text); }
+    .msg{ font-size:0.85rem; margin-top:12px; min-height:1.2em; }
+    .msg.error{ color:var(--danger); }
+    .msg.ok{ color:var(--ok); }
+    .divider{ display:flex; align-items:center; gap:10px; margin:18px 0; color:var(--muted); font-size:0.75rem; }
+    .divider::before, .divider::after{ content:''; flex:1; height:1px; background:var(--border); }
+    .pair-code{ font-size:2rem; letter-spacing:0.3em; font-weight:700; margin:14px 0; color:var(--accent); }
+    .hidden{ display:none !important; }
+    .content{ text-align:left; }
+    .content video, .content img{ width:100%; border-radius:10px; display:block; margin-bottom:12px; }
+    .content audio{ width:100%; }
+    audio, video { outline: none; }
+    .text-view{
+        max-height:60vh; overflow:auto; white-space:pre-wrap; word-break:break-word;
+        background:#0d0d0d; border:1px solid var(--border); border-radius:8px; padding:14px; font-size:0.9rem;
+    }
+    .filename{ font-size:0.95rem; margin-bottom:14px; word-break:break-all; }
+    .warn{
+        font-size:0.78rem; color:var(--muted); background:#0d0d0d; border:1px solid var(--border);
+        border-radius:8px; padding:10px 12px; margin-top:14px; text-align:left;
+    }
+    a.dl-btn{
+        display:block; text-align:center; padding:12px; border-radius:8px; background:var(--accent);
+        color:#04101c; font-weight:600; text-decoration:none;
+    }
+    .spinner{
+        width:22px; height:22px; border:3px solid var(--border); border-top-color:var(--accent);
+        border-radius:50%; margin:16px auto; animation:spin 0.8s linear infinite;
+    }
+    @keyframes spin{ to{ transform:rotate(360deg); } }
+</style>
+</head>
+<body>
+<div class="shell" id="shell">
+    <div class="lock">🔒</div>
+    <h1 id="titleText">Encrypted File</h1>
+    <div class="sub" id="subText">Checking link…</div>
+
+    <!-- Step 1: TVFS login gate (only shown if tvfsUsersOnly) -->
+    <div id="gateStep" class="hidden">
+        <div class="field">
+            <label>TVFS username</label>
+            <input type="text" id="gateUsername" autocomplete="username">
+        </div>
+        <div class="field">
+            <label>TVFS password</label>
+            <input type="password" id="gatePassword" autocomplete="current-password">
+        </div>
+        <button id="gateLoginBtn">Log in</button>
+
+        <div class="divider hidden" id="pairDivider">or</div>
+        <button class="secondary hidden" id="startPairBtn">Request pairing from owner</button>
+        <div class="msg" id="gateMsg"></div>
+    </div>
+
+    <!-- Pairing wait state -->
+    <div id="pairStep" class="hidden">
+        <div class="field">
+            <label>Your TVFS username</label>
+            <input type="text" id="pairUsername" autocomplete="username">
+        </div>
+        <div class="field">
+            <label>Your TVFS password</label>
+            <input type="password" id="pairPassword" autocomplete="current-password">
+        </div>
+        <button id="pairRequestBtn">Send pairing request</button>
+        <div id="pairWaiting" class="hidden">
+            <div class="sub">Show this code to the file owner:</div>
+            <div class="pair-code" id="pairCode">------</div>
+            <div class="spinner"></div>
+            <div class="sub">Waiting for approval…</div>
+        </div>
+        <div class="msg" id="pairMsg"></div>
+    </div>
+
+    <!-- Step 2: password / verify -->
+    <div id="passwordStep" class="hidden">
+        <div class="field">
+            <label>File password</label>
+            <input type="password" id="filePassword" autocomplete="off">
+        </div>
+        <button id="verifyBtn">Verify &amp; Unlock</button>
+        <div class="msg" id="verifyMsg"></div>
+    </div>
+
+    <!-- Step 3: decrypted content -->
+    <div id="contentStep" class="hidden content"></div>
+</div>
+
+<script src="/opaque-client-bundle.js"></script>
+<script src="/encryptedCrypto.js"></script>
+<script>
+(function(){
+    const API = '/api/encrypted';
+    const fileId = new URLSearchParams(location.search).get('id');
+
+    const el = id => document.getElementById(id);
+    const show = id => el(id).classList.remove('hidden');
+    const hide = id => el(id).classList.add('hidden');
+    const setMsg = (id, text, kind) => { const n = el(id); n.textContent = text || ''; n.className = 'msg' + (kind ? ' ' + kind : ''); };
+
+    let meta = null;
+    let accessToken = null; // only needed/used when meta.tvfsUsersOnly
+    let unlockToken = null; // from a completed OPAQUE login — required by /file regardless of tvfsUsersOnly
+    let pairPollTimer = null;
+
+    async function boot() {
+        if (!fileId) {
+            el('titleText').textContent = 'No file specified';
+            el('subText').textContent = 'This link is missing its ?id= parameter.';
+            return;
+        }
+        try {
+            const res = await fetch(`${API}/${fileId}/meta`);
+            if (!res.ok) throw new Error((await res.json()).error || 'Not found');
+            meta = await res.json();
+        } catch (e) {
+            el('titleText').textContent = 'Link unavailable';
+            el('subText').textContent = e.message || 'This file does not exist or has expired.';
+            return;
+        }
+
+        if (meta.isPrivate) {
+            el('subText').textContent = 'Private file — nothing is revealed until you unlock it.';
+        } else {
+            el('subText').textContent = meta.displayName || `Encrypted ${meta.mimeCategory || 'file'}`;
+        }
+
+        if (meta.singleUse && meta.alreadyDownloaded) {
+            el('titleText').textContent = 'Already used';
+            el('subText').textContent = 'This was a single-use link and has already been downloaded once.';
+            return;
+        }
+
+        if (meta.tvfsUsersOnly) {
+            if (meta.allowPairing) {
+                show('pairDivider');
+                show('startPairBtn');
+            }
+            // Already logged in on this browser? Try silently before ever
+            // showing the gate UI — same tvfs_token cookie upload.html uses.
+            try {
+                const res = await fetch(`${API}/${fileId}/login`, {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({})
+                });
+                if (res.ok) {
+                    const data = await res.json();
+                    accessToken = data.accessToken;
+                    show('passwordStep');
+                } else {
+                    show('gateStep');
+                }
+            } catch (e) {
+                show('gateStep');
+            }
+        } else {
+            show('passwordStep');
+        }
+    }
+
+    // ── TVFS login gate ─────────────────────────────────────────────────
+    el('gateLoginBtn').onclick = async () => {
+        setMsg('gateMsg', '');
+        const username = el('gateUsername').value.trim();
+        const password = el('gatePassword').value;
+        if (!username || !password) return setMsg('gateMsg', 'Enter both fields', 'error');
+        el('gateLoginBtn').disabled = true;
+        try {
+            const res = await fetch(`${API}/${fileId}/login`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ username, password })
+            });
+            const data = await res.json();
+            if (!res.ok) return setMsg('gateMsg', data.error || 'Login failed', 'error');
+            accessToken = data.accessToken;
+            hide('gateStep');
+            show('passwordStep');
+        } catch (e) {
+            setMsg('gateMsg', 'Network error', 'error');
+        } finally {
+            el('gateLoginBtn').disabled = false;
+        }
+    };
+
+    // ── Pairing ──────────────────────────────────────────────────────────
+    el('startPairBtn').onclick = () => { hide('gateStep'); show('pairStep'); };
+
+    el('pairRequestBtn').onclick = async () => {
+        setMsg('pairMsg', '');
+        const viewerUsername = el('pairUsername').value.trim();
+        const viewerPassword = el('pairPassword').value;
+        if (!viewerUsername || !viewerPassword) return setMsg('pairMsg', 'Enter both fields', 'error');
+        el('pairRequestBtn').disabled = true;
+        try {
+            const res = await fetch(`${API}/${fileId}/pair/request`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ viewerUsername, viewerPassword })
+            });
+            const data = await res.json();
+            if (!res.ok) { setMsg('pairMsg', data.error || 'Pairing request failed', 'error'); el('pairRequestBtn').disabled = false; return; }
+            el('pairCode').textContent = data.code;
+            show('pairWaiting');
+            pollPairing(data.requestId, data.expiresAt);
+        } catch (e) {
+            setMsg('pairMsg', 'Network error', 'error');
+            el('pairRequestBtn').disabled = false;
+        }
+    };
+
+    function pollPairing(requestId, expiresAt) {
+        pairPollTimer = setInterval(async () => {
+            if (Date.now() > expiresAt) {
+                clearInterval(pairPollTimer);
+                setMsg('pairMsg', 'Pairing request expired — try again', 'error');
+                hide('pairWaiting');
+                el('pairRequestBtn').disabled = false;
+                return;
+            }
+            try {
+                const res = await fetch(`${API}/${fileId}/pair/status/${requestId}`);
+                const data = await res.json();
+                if (data.status === 'approved') {
+                    clearInterval(pairPollTimer);
+                    accessToken = data.accessToken;
+                    hide('pairStep');
+                    show('passwordStep');
+                } else if (data.status === 'denied') {
+                    clearInterval(pairPollTimer);
+                    setMsg('pairMsg', 'Owner denied this request', 'error');
+                    hide('pairWaiting');
+                    el('pairRequestBtn').disabled = false;
+                }
+            } catch (e) { /* keep polling */ }
+        }, 2500);
+    }
+
+    // ── Password verify + decrypt + render ──────────────────────────────
+    el('verifyBtn').onclick = async () => {
+        setMsg('verifyMsg', '');
+        const password = el('filePassword').value;
+        if (!password) return setMsg('verifyMsg', 'Enter the password', 'error');
+        el('verifyBtn').disabled = true;
+        setMsg('verifyMsg', 'Verifying…');
+
+        try {
+            const q = meta.tvfsUsersOnly ? `?token=${encodeURIComponent(accessToken)}` : '';
+
+            let opaqueResult;
+            try {
+                opaqueResult = await TVFSCrypto.opaque.login(
+                    password, 'files.tomasekvalla.cz',
+                    async (ke1Serialized) => {
+                        const res = await fetch(`${API}/${fileId}/opaque/login-init`, {
+                            method: 'POST', headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ ke1: ke1Serialized })
+                        });
+                        const d = await res.json();
+                        if (!res.ok) throw new Error(d.error || 'Login failed');
+                        return { ke2Serialized: d.ke2, sessionId: d.sessionId };
+                    },
+                    async (ke3Serialized, sessionId) => {
+                        const res = await fetch(`${API}/${fileId}/opaque/login-finish`, {
+                            method: 'POST', headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ ke3: ke3Serialized, sessionId })
+                        });
+                        const d = await res.json();
+                        if (!res.ok) return null;
+                        unlockToken = d.unlockToken;
+                        return d.unlockToken;
+                    }
+                );
+            } catch (e) {
+                setMsg('verifyMsg', 'Wrong password', 'error');
+                el('verifyBtn').disabled = false;
+                return;
+            }
+
+            setMsg('verifyMsg', 'Password correct — downloading…', 'ok');
+            const exportKeyB64 = opaqueResult.exportKeyB64;
+
+            let displayName = meta.displayName;
+            if (meta.isPrivate && meta.encryptedName) {
+                try { displayName = await TVFSCrypto.decryptFilename(exportKeyB64, meta.encryptedName); }
+                catch (e) { displayName = '(unknown name)'; }
+            }
+
+            const fileQ = meta.tvfsUsersOnly ? `&token=${encodeURIComponent(accessToken)}` : '';
+
+            if (meta.chunked) {
+                const cmRes = await fetch(`${API}/${fileId}/chunk-meta`);
+                if (!cmRes.ok) throw new Error((await cmRes.json()).error || 'Could not fetch chunk info');
+                const chunkMeta = await cmRes.json();
+
+                const aesKey = await TVFSCrypto.chunked.importRawAesKey(exportKeyB64);
+                const baseNonce = new Uint8Array(TVFSCrypto.base64ToBuf(chunkMeta.baseNonceB64));
+
+                const plainChunks = [];
+                for (let i = 0; i < chunkMeta.chunkCount; i++) {
+                    setMsg('verifyMsg', `Downloading chunk ${i + 1}/${chunkMeta.chunkCount}…`, 'ok');
+                    const cRes = await fetch(`${API}/${fileId}/chunk/${i}?unlock=${encodeURIComponent(unlockToken)}${fileQ}`);
+                    if (!cRes.ok) throw new Error((await cRes.json()).error || `Chunk ${i} download failed`);
+                    const cipherBuf = await cRes.arrayBuffer();
+                    // Throws on any tampering (wrong order/file/truncation) —
+                    // see the AAD design note in encryptedCrypto.js.
+                    const plainBuf = await TVFSCrypto.chunked.decryptChunk(aesKey, fileId, i, chunkMeta.chunkCount, baseNonce, cipherBuf);
+                    plainChunks.push(plainBuf);
+                }
+
+                renderContent(plainChunks, displayName, meta.mimeCategory);
+            } else {
+                const fileRes = await fetch(`${API}/${fileId}/file?unlock=${encodeURIComponent(unlockToken)}${fileQ}`);
+                if (!fileRes.ok) throw new Error((await fileRes.json()).error || 'Download failed');
+                const containerBuf = await fileRes.arrayBuffer();
+                const plainBuf = await TVFSCrypto.decryptContainer(exportKeyB64, containerBuf);
+                renderContent(plainBuf, displayName, meta.mimeCategory);
+            }
+
+            hide('passwordStep');
+            show('contentStep');
+        } catch (e) {
+            setMsg('verifyMsg', e.message || 'Something went wrong', 'error');
+            el('verifyBtn').disabled = false;
+        }
+    };
+
+    function guessCategory(bytes, name) {
+        if (meta.mimeCategory) return meta.mimeCategory;
+        const ext = (name || '').split('.').pop().toLowerCase();
+        if (['mp3','flac','wav','ogg','m4a','opus'].includes(ext)) return 'audio';
+        if (['mp4','webm','mov','mkv'].includes(ext)) return 'video';
+        if (['png','jpg','jpeg','gif','webp','avif'].includes(ext)) return 'image';
+        if (['txt','md','json','csv','log'].includes(ext)) return 'text';
+        return 'file';
+    }
+
+    function renderContent(plainBufOrChunks, displayName, category) {
+        const container = el('contentStep');
+        container.innerHTML = '';
+
+        const nameEl = document.createElement('div');
+        nameEl.className = 'filename';
+        nameEl.textContent = displayName || '(unnamed file)';
+        container.appendChild(nameEl);
+
+        const parts = Array.isArray(plainBufOrChunks) ? plainBufOrChunks : [plainBufOrChunks];
+        const cat = guessCategory(new Uint8Array(parts[0]), displayName);
+        const blob = new Blob(parts);
+        const url = URL.createObjectURL(blob);
+
+        if (cat === 'audio') {
+            const a = document.createElement('audio'); a.controls = true; a.src = url; container.appendChild(a);
+        } else if (cat === 'video') {
+            const v = document.createElement('video'); v.controls = true; v.src = url; container.appendChild(v);
+        } else if (cat === 'image') {
+            const img = document.createElement('img'); img.src = url; container.appendChild(img);
+        } else if (cat === 'text') {
+            const pre = document.createElement('div'); pre.className = 'text-view';
+            new Response(blob).text().then(t => { pre.textContent = t; });
+            container.appendChild(pre);
+        }
+
+        const dl = document.createElement('a');
+        dl.className = 'dl-btn';
+        dl.href = url;
+        dl.download = displayName || 'file';
+        dl.textContent = cat === 'file' ? 'Download' : 'Download original';
+        dl.style.marginTop = '10px';
+        container.appendChild(dl);
+
+        if (meta.singleUse) {
+            const warn = document.createElement('div');
+            warn.className = 'warn';
+            warn.textContent = '⚠️ This was a single-use link. The file has now been permanently deleted from the server — save it now if you need it.';
+            container.appendChild(warn);
+        }
+    }
+
+    boot();
+})();
+</script>
+</body>
+</html>

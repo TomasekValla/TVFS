@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TVFS — Pairing</title>
+<link rel="stylesheet" href="/tvfs-brand.css">
+<style>
+    .waited { font-size: 0.8rem; color: var(--text-secondary); margin-top: 6px; text-align: center; }
+    .identity-line { font-size: 0.85rem; color: var(--text-secondary); text-align: center; margin-bottom: 4px; }
+</style>
+</head>
+<body>
+<div class="tvfs-shell">
+
+<div class="tvfs-card" id="startCard">
+    <div class="tvfs-icon">🔗</div>
+    <h1 id="titleText">Request Access</h1>
+    <div class="tvfs-sub" id="subText">Loading…</div>
+
+    <div id="loginStep">
+        <div class="tvfs-field"><label>TVFS Username</label><input type="text" id="viewerUsername" autocomplete="username"></div>
+        <div class="tvfs-field"><label>TVFS Password</label><input type="password" id="viewerPassword" autocomplete="current-password"></div>
+        <button class="tvfs-btn" id="loginBtn">Log in</button>
+        <button class="tvfs-btn tvfs-btn-ghost" id="skipLoginBtn">Continue as Anonym</button>
+        <div class="tvfs-msg" id="loginMsg"></div>
+    </div>
+</div>
+
+<div class="tvfs-card hidden" id="waitCard">
+    <div class="identity-line" id="waitIdentity"></div>
+    <div class="tvfs-sub" style="margin-bottom:0;">Show this code to the file owner:</div>
+    <div class="tvfs-code" id="pairCode">------</div>
+    <div class="tvfs-spinner" id="waitSpinner"></div>
+    <div class="tvfs-sub" id="waitStatus" style="margin-bottom:0;">Waiting for the owner to approve…</div>
+    <div class="tvfs-msg" id="waitMsg"></div>
+</div>
+
+<div class="tvfs-card hidden" id="fileListCard">
+    <div class="tvfs-icon tvfs-pop">✅</div>
+    <h1>Pairing successful</h1>
+    <div class="waited" id="waitedText"></div>
+    <div style="margin-top:16px; text-align:left;" id="folderTree"></div>
+    <button class="tvfs-btn" id="downloadAllBtn" style="margin-top:10px;">Download all</button>
+</div>
+
+</div>
+
+<script src="/tvfs-gate.js"></script>
+<script>
+(function(){
+    const API = '/api/protected';
+    const shareId = __SHARE_ID_JSON__;
+    const DEVICE_ID_KEY = 'tvfs_pairing_device_id';
+
+    const el = id => document.getElementById(id);
+    const show = id => el(id).classList.remove('hidden');
+    const hide = id => el(id).classList.add('hidden');
+    const setMsg = (id, text, kind) => { const n = el(id); n.textContent = text || ''; n.className = 'tvfs-msg' + (kind ? ' ' + kind : ''); };
+
+    TVFSGate.prefillUsername(el('viewerUsername'));
+
+    function getDeviceId() {
+        let id = localStorage.getItem(DEVICE_ID_KEY);
+        if (!id) {
+            id = crypto.randomUUID ? crypto.randomUUID() : (Date.now() + '-' + Math.random().toString(36).slice(2));
+            localStorage.setItem(DEVICE_ID_KEY, id);
+        }
+        return id;
+    }
+
+    let meta = null;
+    let pollTimer = null;
+    let accessToken = null;
+    let startedAt = null;
+
+    async function boot() {
+        try {
+            const res = await fetch(`${API}/${shareId}/meta`);
+            if (!res.ok) throw new Error((await res.json()).error || 'Not found');
+            meta = await res.json();
+            el('subText').textContent = `${meta.fileCount} file${meta.fileCount === 1 ? '' : 's'}. Log in to identify yourself to the owner, or continue anonymously.`;
+        } catch (e) {
+            el('titleText').textContent = 'Link unavailable';
+            el('subText').textContent = e.message || 'This share does not exist or has expired.';
+            el('loginStep').classList.add('hidden');
+        }
+    }
+
+    // ── Real TVFS login (persists site-wide via the same cookie
+    // upload.html uses) — if this identifies you as the SHARE'S OWNER,
+    // send you straight to the dashboard instead of requesting pairing
+    // with yourself.
+    el('loginBtn').onclick = async () => {
+        setMsg('loginMsg', '');
+        const username = el('viewerUsername').value.trim();
+        const password = el('viewerPassword').value;
+        if (!username || !password) return setMsg('loginMsg', 'Enter both fields.', 'error');
+        el('loginBtn').disabled = true;
+
+        const result = await TVFSGate.login(username, password, 7);
+        if (!result.ok) {
+            setMsg('loginMsg', result.error, 'error');
+            el('loginBtn').disabled = false;
+            return;
+        }
+
+        // Check ownership by attempting the dashboard inbox — if it
+        // succeeds, this account owns this share.
+        try {
+            const res = await fetch(`${API}/${shareId}/pair/inbox`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({})
+            });
+            if (res.ok) {
+                el('titleText').textContent = 'This is your share';
+                el('subText').textContent = 'Redirecting you to the Pairing Dashboard…';
+                el('loginStep').classList.add('hidden');
+                setTimeout(() => {
+                    const dashUrl = location.href.replace(/pair_/, 'dashboard_');
+                    location.href = dashUrl;
+                }, 1200);
+                return;
+            }
+        } catch (e) { /* not the owner — fall through to requesting pairing normally */ }
+
+        startPairing(username, password);
+    };
+
+    el('skipLoginBtn').onclick = () => startPairing(null, null);
+
+    async function startPairing(username, password) {
+        setMsg('loginMsg', '');
+        el('loginBtn').disabled = true;
+        el('skipLoginBtn').disabled = true;
+        try {
+            const res = await fetch(`${API}/${shareId}/pair/start`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ deviceId: getDeviceId(), username: username || undefined, password: password || undefined })
+            });
+            const data = await res.json();
+            if (!res.ok) {
+                if (data.error === 'banned') {
+                    el('titleText').textContent = 'Blocked';
+                    el('subText').textContent = 'You have been permanently blocked from pairing with this share.';
+                    el('loginStep').classList.add('hidden');
+                    return;
+                }
+                setMsg('loginMsg', data.error || 'Could not request pairing.', 'error');
+                el('loginBtn').disabled = false;
+                el('skipLoginBtn').disabled = false;
+                return;
+            }
+            startedAt = Date.now();
+            el('waitIdentity').textContent = data.label;
+            el('pairCode').textContent = data.code;
+            hide('startCard');
+            show('waitCard');
+            pollStatus(data.requestId, data.expiresAt);
+        } catch (e) {
+            setMsg('loginMsg', 'Network error — check your connection.', 'error');
+            el('loginBtn').disabled = false;
+            el('skipLoginBtn').disabled = false;
+        }
+    }
+
+    // Resets straight back to the request screen — no page reload needed,
+    // this is the actual fix for "kicked and stuck" from before.
+    function resetToStart(message) {
+        clearInterval(pollTimer);
+        hide('waitCard');
+        show('startCard');
+        el('loginBtn').disabled = false;
+        el('skipLoginBtn').disabled = false;
+        if (message) setMsg('loginMsg', message, 'warn');
+    }
+
+    function pollStatus(requestId, expiresAt) {
+        pollTimer = setInterval(async () => {
+            if (Date.now() > expiresAt) {
+                resetToStart('Your code expired. Request pairing again whenever you\'re ready.');
+                return;
+            }
+            try {
+                const res = await fetch(`${API}/${shareId}/pair/status/${requestId}`);
+                const data = await res.json();
+                if (data.status === 'approved') {
+                    clearInterval(pollTimer);
+                    accessToken = data.accessToken;
+                    showFileList(data.waitedMs);
+                } else if (data.status === 'kicked') {
+                    resetToStart('The owner declined this request. You can try again whenever you\'re ready.');
+                } else if (data.status === 'expired') {
+                    resetToStart('Your code expired. Request pairing again whenever you\'re ready.');
+                }
+            } catch (e) { /* keep polling */ }
+        }, 2500);
+    }
+
+    function formatBytes(bytes) {
+        if (bytes === 0) return '0 B';
+        const k = 1024, sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+        const i = Math.floor(Math.log(bytes) / Math.log(k));
+        return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+    }
+    function formatWaited(ms) {
+        const s = Math.floor(ms / 1000);
+        return `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
+    }
+    function fileUrl(index) { return `${API}/${shareId}/file/${index}?token=${encodeURIComponent(accessToken)}`; }
+
+    function showFileList(waitedMs) {
+        hide('waitCard');
+        show('fileListCard');
+        el('waitedText').textContent = `Waited ${formatWaited(waitedMs != null ? waitedMs : (Date.now() - startedAt))}`;
+
+        const groups = {};
+        meta.files.forEach(f => {
+            const parts = f.relativePath.split('/');
+            const folder = parts.length > 1 ? parts.slice(0, -1).join('/') : '';
+            (groups[folder] = groups[folder] || []).push({ ...f, name: parts[parts.length - 1] });
+        });
+
+        const tree = el('folderTree');
+        tree.innerHTML = '';
+        Object.keys(groups).sort().forEach(folder => {
+            if (folder) {
+                const label = document.createElement('div');
+                label.style.cssText = 'font-size:0.72rem;color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.06em;margin:10px 0 6px;font-weight:600;';
+                label.textContent = '📁 ' + folder;
+                tree.appendChild(label);
+            }
+            groups[folder].forEach(f => {
+                const row = document.createElement('div');
+                row.className = 'tvfs-file-row';
+                row.innerHTML = `<span class="tvfs-file-name">${escapeHtml(f.name)}</span><span class="tvfs-file-meta">${formatBytes(f.size)}</span><button class="tvfs-btn tvfs-btn-secondary">Download</button>`;
+                row.querySelector('button').onclick = () => {
+                    const a = document.createElement('a');
+                    a.href = fileUrl(f.index); a.download = f.name;
+                    document.body.appendChild(a); a.click(); a.remove();
+                };
+                tree.appendChild(row);
+            });
+        });
+    }
+
+    el('downloadAllBtn').onclick = async () => {
+        el('downloadAllBtn').disabled = true;
+        for (const f of meta.files) {
+            const a = document.createElement('a');
+            a.href = fileUrl(f.index);
+            a.download = f.relativePath.split('/').pop();
+            document.body.appendChild(a); a.click(); a.remove();
+            await new Promise(r => setTimeout(r, 400));
+        }
+        el('downloadAllBtn').disabled = false;
+    };
+
+    function escapeHtml(s) {
+        return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    }
+
+    boot();
+})();
+</script>
+</body>
+</html>

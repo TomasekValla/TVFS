@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TVFS — Pairing Dashboard</title>
+<link rel="stylesheet" href="/tvfs-brand.css">
+<style>
+    .wrap { max-width: 560px; margin: 0 auto; }
+    .identity-title { font-family: 'Space Grotesk', 'Inter', sans-serif; font-size: 1.1rem; font-weight: 700; }
+    .req-code { font-family: 'JetBrains Mono', monospace; font-size: 1.5rem; font-weight: 600; letter-spacing: 0.2em; color: var(--accent-secondary); }
+    .req-label { font-size: 0.9rem; margin: 4px 0 2px; }
+    .req-waited { font-size: 0.75rem; color: var(--text-secondary); margin-bottom: 12px; }
+    .req-actions { display: flex; gap: 6px; }
+    .req-actions button { flex: 1; padding: 9px 4px; font-size: 0.72rem; margin: 0; display: flex; flex-direction: column; align-items: center; gap: 2px; }
+    .req-actions .emoji { font-size: 1rem; }
+</style>
+</head>
+<body style="align-items:flex-start;">
+<div class="tvfs-shell wrap">
+    <div class="tvfs-card" style="text-align:left;">
+        <div class="identity-title">Pairing Dashboard</div>
+        <div class="tvfs-sub" style="text-align:left; margin-bottom:0;">Approve devices trying to pair with your protected share.</div>
+    </div>
+
+    <div class="tvfs-card" id="loginCard">
+        <div class="tvfs-field"><label>TVFS Username</label><input id="u" autocomplete="username"></div>
+        <div class="tvfs-field"><label>TVFS Password</label><input id="p" type="password" autocomplete="current-password"></div>
+        <button class="tvfs-btn" id="loginBtn">Log in</button>
+        <div class="tvfs-msg" id="loginMsg"></div>
+    </div>
+
+    <div id="dashboardWrap" class="hidden">
+        <div class="tvfs-card" style="text-align:left;">
+            <div class="identity-title">Dashboard</div>
+            <div class="tvfs-sub" id="identityLine" style="text-align:left; margin:2px 0 0;"></div>
+        </div>
+
+        <div id="reqList"></div>
+
+        <div class="tvfs-card" style="text-align:left;">
+            <div style="font-weight:600; margin-bottom:10px;">Your files</div>
+            <div id="ownFileList"></div>
+            <button class="tvfs-btn" id="ownDownloadAllBtn" style="margin-top:8px;">Download all</button>
+        </div>
+    </div>
+</div>
+
+<script src="/tvfs-gate.js"></script>
+<script>
+(function(){
+    const API = '/api/protected';
+    const shareId = __SHARE_ID_JSON__;
+    let creds = null;
+    let ownAccessToken = null;
+    let meta = null;
+    let poll = null;
+
+    const el = id => document.getElementById(id);
+    const setMsg = (id, text, kind) => { const n = el(id); n.textContent = text || ''; n.className = 'tvfs-msg' + (kind ? ' ' + kind : ''); };
+
+    TVFSGate.prefillUsername(el('u'));
+
+    // Silent check first — if the tvfs_token cookie already identifies
+    // the owner, skip the login form entirely. Crucially: NO error is
+    // shown on this silent attempt if it fails — that was the bug before
+    // (a blank login screen shouldn't greet you with a red error you
+    // never caused).
+    async function tryCookieAuth() {
+        const result = await checkInbox(null, null, /* silent */ true);
+        if (result.ok) {
+            enterDashboard();
+        } else if (result.wrongUser) {
+            // Logged in, but as someone who isn't the owner — per spec:
+            // tell them, then send them to request pairing as themselves.
+            redirectToPairPage(result.message);
+        }
+    }
+
+    el('loginBtn').onclick = async () => {
+        const username = el('u').value.trim();
+        const password = el('p').value;
+        if (!username || !password) return setMsg('loginMsg', 'Enter both fields.', 'error');
+        el('loginBtn').disabled = true;
+
+        const loginResult = await TVFSGate.login(username, password, 7);
+        if (!loginResult.ok) {
+            setMsg('loginMsg', loginResult.error, 'error');
+            el('loginBtn').disabled = false;
+            return;
+        }
+
+        const result = await checkInbox(null, null, false);
+        el('loginBtn').disabled = false;
+        if (result.ok) {
+            creds = null; // cookie now carries the session, no need to keep typed creds around
+            enterDashboard();
+        } else if (result.wrongUser) {
+            redirectToPairPage(result.message);
+        } else {
+            setMsg('loginMsg', result.message, 'error');
+        }
+    };
+
+    function redirectToPairPage(message) {
+        el('loginCard').innerHTML = `
+            <div class="tvfs-msg warn" style="margin-top:0;">${message}</div>
+            <div class="tvfs-sub" style="margin-top:10px;">Taking you to the pairing request page…</div>
+        `;
+        setTimeout(() => {
+            location.href = location.href.replace(/dashboard_/, 'pair_');
+        }, 1800);
+    }
+
+    function enterDashboard() {
+        el('loginCard').classList.add('hidden');
+        el('dashboardWrap').classList.remove('hidden');
+        poll = setInterval(() => checkInbox(null, null, true), 4000);
+    }
+
+    // Returns { ok, wrongUser, message }. `silent` suppresses UI error
+    // messages entirely — used for the initial cookie probe and for
+    // background polling, where a transient failure shouldn't flash red
+    // text at the owner.
+    async function checkInbox(username, password, silent) {
+        try {
+            const res = await fetch(`${API}/${shareId}/pair/inbox`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ username, password })
+            });
+            const data = await res.json();
+            if (!res.ok) {
+                if (data.error && data.error.includes('not the owner')) {
+                    return { ok: false, wrongUser: true, message: "That's not the account that uploaded this share — please log in as the uploader." };
+                }
+                return { ok: false, wrongUser: false, message: silent ? '' : 'Please log in with TVFS to continue.' };
+            }
+            ownAccessToken = data.accessToken;
+            el('identityLine').textContent = `Tier ${data.tier} • ${data.username} • Ready to allow pairing`;
+            renderInbox(data.pending);
+            if (!meta) await loadOwnFiles();
+            return { ok: true };
+        } catch (e) {
+            return { ok: false, wrongUser: false, message: silent ? '' : 'Network error — check your connection.' };
+        }
+    }
+
+    async function loadOwnFiles() {
+        try {
+            const res = await fetch(`${API}/${shareId}/meta`);
+            meta = await res.json();
+            renderOwnFiles();
+        } catch (e) { /* ignore */ }
+    }
+
+    function formatBytes(bytes) {
+        if (bytes === 0) return '0 B';
+        const k = 1024, sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+        const i = Math.floor(Math.log(bytes) / Math.log(k));
+        return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+    }
+    function ownFileUrl(index) { return `${API}/${shareId}/file/${index}?token=${encodeURIComponent(ownAccessToken)}`; }
+
+    function renderOwnFiles() {
+        const list = el('ownFileList');
+        list.innerHTML = '';
+        (meta.files || []).forEach(f => {
+            const row = document.createElement('div');
+            row.className = 'tvfs-file-row';
+            row.innerHTML = `<span class="tvfs-file-name">${escapeHtml(f.relativePath)}</span><span class="tvfs-file-meta">${formatBytes(f.size)}</span><button class="tvfs-btn tvfs-btn-secondary">Download</button>`;
+            row.querySelector('button').onclick = () => {
+                const a = document.createElement('a');
+                a.href = ownFileUrl(f.index); a.download = f.relativePath.split('/').pop();
+                document.body.appendChild(a); a.click(); a.remove();
+            };
+            list.appendChild(row);
+        });
+    }
+
+    el('ownDownloadAllBtn').onclick = async () => {
+        if (!meta) return;
+        el('ownDownloadAllBtn').disabled = true;
+        for (const f of meta.files) {
+            const a = document.createElement('a');
+            a.href = ownFileUrl(f.index); a.download = f.relativePath.split('/').pop();
+            document.body.appendChild(a); a.click(); a.remove();
+            await new Promise(r => setTimeout(r, 400));
+        }
+        el('ownDownloadAllBtn').disabled = false;
+    };
+
+    function formatWaited(ms) {
+        const s = Math.floor(ms / 1000);
+        return `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
+    }
+
+    function renderInbox(pending) {
+        const list = el('reqList');
+        if (!pending.length) {
+            list.innerHTML = '<div class="tvfs-card"><div class="tvfs-sub" style="margin-bottom:0;">No pending pairing requests right now.</div></div>';
+            return;
+        }
+        list.innerHTML = '';
+        for (const req of pending) {
+            const card = document.createElement('div');
+            card.className = 'tvfs-card';
+            card.style.textAlign = 'left';
+            card.innerHTML = `
+                <div class="req-code">${escapeHtml(req.code)}</div>
+                <div class="req-label">${escapeHtml(req.label)}</div>
+                <div class="req-waited">Waiting ${formatWaited(req.waitedMs)}</div>
+                <div class="req-actions">
+                    <button class="tvfs-btn tvfs-btn-danger" data-act="ban"><span class="emoji">🔨</span>Ban</button>
+                    <button class="tvfs-btn tvfs-btn-ghost" data-act="ignore"><span class="emoji">🙈</span>Ignore</button>
+                    <button class="tvfs-btn tvfs-btn-ghost" data-act="kick"><span class="emoji">✕</span>Kick</button>
+                    <button class="tvfs-btn" data-act="approve" style="background:var(--status-good);color:#04101c;"><span class="emoji">✅</span>Approve</button>
+                </div>
+                <div class="tvfs-msg" data-msg></div>
+            `;
+            card.querySelectorAll('[data-act]').forEach(btn => {
+                btn.onclick = () => decide(req.requestId, btn.dataset.act, card);
+            });
+            list.appendChild(card);
+        }
+    }
+
+    async function decide(requestId, action, card) {
+        const msgEl = card.querySelector('[data-msg]');
+        try {
+            const res = await fetch(`${API}/${shareId}/pair/decide`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ requestId, action })
+            });
+            const data = await res.json();
+            if (!res.ok) { msgEl.textContent = data.error || 'That didn\'t work — try again.'; msgEl.className = 'tvfs-msg error'; return; }
+            const labels = { approve: 'Approved.', ban: 'Banned permanently.', kick: 'Kicked — they can request again.', ignore: 'Hidden from your list.' };
+            msgEl.textContent = labels[action] || 'Done.';
+            msgEl.className = 'tvfs-msg ok';
+            setTimeout(() => checkInbox(null, null, true), 600);
+        } catch (e) {
+            msgEl.textContent = 'Network error.';
+            msgEl.className = 'tvfs-msg error';
+        }
+    }
+
+    function escapeHtml(s) {
+        return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    }
+
+    tryCookieAuth();
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Privacy — TVFS</title>
+<style>
+    :root{
+        --bg:#111111; --card:#1a1a1a; --border:#2a2a2a; --text:#eaeaea; --muted:#9a9a9a; --accent:#4da3ff;
+    }
+    *{box-sizing:border-box;}
+    body{
+        margin:0; background:var(--bg); color:var(--text);
+        font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+        line-height:1.6;
+    }
+    .wrap{max-width:760px; margin:0 auto; padding:48px 24px 96px;}
+    h1{font-size:1.8rem; margin-bottom:4px;}
+    .sub{color:var(--muted); margin-bottom:40px; font-size:0.95rem;}
+    h2{font-size:1.2rem; margin-top:40px; border-bottom:1px solid var(--border); padding-bottom:8px;}
+    .card{
+        background:var(--card); border:1px solid var(--border); border-radius:12px;
+        padding:20px 24px; margin:16px 0;
+    }
+    table{width:100%; border-collapse:collapse; font-size:0.9rem;}
+    th,td{text-align:left; padding:8px 10px; border-bottom:1px solid var(--border);}
+    th{color:var(--muted); font-weight:600;}
+    code{background:#000; padding:2px 6px; border-radius:4px; font-size:0.85em;}
+    a{color:var(--accent); text-decoration:none;}
+    a:hover{text-decoration:underline;}
+    .muted{color:var(--muted); font-size:0.9rem;}
+    .back{display:inline-block; margin-bottom:24px; color:var(--muted); font-size:0.9rem;}
+</style>
+</head>
+<body>
+<div class="wrap">
+    <a class="back" href="/upload.html">&larr; Back to TVFS</a>
+    <h1>Privacy &amp; Data Handling</h1>
+    <div class="sub">TomasekValla Filestream System (files.tomasekvalla.cz) — last updated 2026.</div>
+
+    <h2>What we collect</h2>
+    <p>To keep TVFS functional, stable, and secure, we automatically log certain metadata for every upload attempt — including ones that are started but never finished. This applies whether or not the upload succeeds.</p>
+    <div class="card">
+        <table>
+            <tr><th>Field</th><th>Why we collect it</th></tr>
+            <tr><td>IP address <span class="muted">(via <code>CF-Connecting-IP</code>)</span></td><td>Abuse prevention, security, legal compliance</td></tr>
+            <tr><td>Country <span class="muted">(via <code>CF-IPCountry</code>)</span></td><td>Basic geographic context, no dedicated GeoIP lookups needed</td></tr>
+            <tr><td>Cloudflare Ray ID</td><td>Lets us trace a specific request with Cloudflare support if needed</td></tr>
+            <tr><td>Referer</td><td>Where the upload request came from, if anywhere</td></tr>
+            <tr><td>Filename, file size, MIME type</td><td>Classification, storage routing, abuse review</td></tr>
+            <tr><td>Upload time &amp; expiration date</td><td>Operational — matches what's shown to you at upload time</td></tr>
+            <tr><td>Session token (hashed)</td><td>So you don't have to log in on every request</td></tr>
+        </table>
+    </div>
+
+    <h2>How long we keep it</h2>
+    <p>This metadata is stored securely for <strong>4 months</strong>, after which it is automatically deleted. This applies equally to completed uploads, and to uploads that were started but abandoned or that failed midway.</p>
+
+    <h2>Who sees it</h2>
+    <p>The site administrator has direct access to all stored files and metadata for maintenance and moderation purposes, but does not intentionally inspect it unless there's reason to believe a violation has occurred. This data is <strong>never sold or shared with third parties</strong> for marketing or advertising purposes.</p>
+    <p>The site administrator is also the owner of the <strong>tomasekvalla.cz</strong> domain: <strong>Tomáš Valla</strong>, reachable at <a href="mailto:tomasek@tomasekvalla.cz">tomasek@tomasekvalla.cz</a> for any data-related questions or requests.</p>
+    <p>The company hosting the underlying server infrastructure could, in theory, also access this data, since it physically resides on hardware they operate. In practice, neither the site administrator nor the hosting provider has any motivation to inspect it — it isn't monetized, monitored for profiling, or used for anything beyond keeping TVFS running.</p>
+    <p>If law enforcement or legal authorities make a valid request, we will not hesitate to use and provide all stored metadata against the party responsible for illegal content. See the content policy on the upload page for details.</p>
+
+    <h2>Legal basis</h2>
+    <p>We rely on <strong>legitimate interest</strong> (rather than consent) as the legal basis for collecting upload IPs and related request metadata — this is necessary to prevent abuse, investigate incidents, and comply with legal obligations for a publicly accessible file-sharing service. You may contact the site administrator with any data-related questions or requests.</p>
+
+    <h2>Cloudflare</h2>
+    <p>We use Cloudflare in front of this service to ensure security and connectivity. Cloudflare automatically processes basic network metadata (such as your IP address) to protect the site from attacks, independently of the logging described above. You can read more in <a href="https://www.cloudflare.com/privacypolicy/" target="_blank" rel="noopener">Cloudflare's Privacy Policy</a>.</p>
+
+    <h2>Encrypted Sharing</h2>
+    <p>If you use the Encrypted Sharing feature, file contents are encrypted on your own device before upload — we never see the plaintext or your password/key. Files shared this way are always <strong>Private</strong>: the filename and file type are hidden too, and the landing page shows nothing but a password prompt until you verify, at which point your device decrypts everything locally and only then builds the matching player, reader, or download button.</p>
+    <p>Sharing more than one file at once uses what we call a "vault": each file gets its own random encryption key, and those keys are themselves stored in a small file encrypted with your one password. We only ever see how many files there are and their encrypted sizes — never names, types, or contents of any of them.</p>
+    <p>The upload metadata described above (size, timing, IP) is still logged the same way as any other upload — encryption protects the file's contents, not the fact that an upload happened. On top of that, if you turn on <strong>TVFS Users Only</strong> or <strong>Pairing</strong> for a shared file, we additionally log every login/pairing attempt against that link (successful or not), every time someone unlocks or downloads a file, and exactly when a <strong>Single Use</strong> file was deleted from the server as a result. As with all other request logs on TVFS, this includes the requester's IP address and is kept for <strong>4 months</strong> before automatic deletion — see "What we collect" above.</p>
+    <p>We can't technically know whether a password you enter on a landing page was correct or not — that check happens entirely on your device. Your browser does report back to us when a password attempt fails, purely so we can spot patterns like someone brute-forcing a link; a wrong guess doesn't reveal your password or file contents to us either way.</p>
+
+    <h2>Local storage</h2>
+    <p>TVFS stores some data only in your browser's local storage — such as your "Recently uploaded" list and a couple of preferences (e.g. chunk size, auto-copy). This never leaves your device unless you're logged in, in which case a synced copy of your upload history is also kept server-side (tied to your account) so it can follow you across devices.</p>
+</div>
+</body>
+</html>

@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TVFS — Encrypted Vault</title>
+<style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@600;700&family=JetBrains+Mono:wght@500;600&display=swap');
+    :root{
+        --bg:#03070a; --card:rgba(28,32,42,0.38); --border:rgba(255,255,255,0.14); --text:#ffffff; --muted:#9aa6bd;
+        --accent:#b083ff; --danger:#ff6b6b; --ok:#2fffc4;
+    }
+    *{box-sizing:border-box;}
+    body{
+        margin:0; min-height:100vh; background-color:var(--bg);
+        background-image: radial-gradient(ellipse 80% 60% at 20% -10%, rgba(132, 85, 255, 0.18), transparent), radial-gradient(ellipse 70% 50% at 100% 110%, rgba(0, 230, 189, 0.12), transparent);
+        color:var(--text);
+        font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+        display:flex; align-items:flex-start; justify-content:center; padding:40px 24px;
+    }
+    h1{ font-family:'Space Grotesk','Inter',sans-serif; }
+    .shell{ width:100%; max-width:520px; }
+    .card{
+        background:var(--card); border:1px solid var(--border); border-radius:16px;
+        backdrop-filter:blur(20px) saturate(150%); -webkit-backdrop-filter:blur(20px) saturate(150%);
+        box-shadow:0 30px 70px -15px rgba(0,0,0,0.75);
+        padding:28px 26px; margin-bottom:16px;
+    }
+    .lock{ font-size:2rem; text-align:center; margin-bottom:8px; }
+    h1{ font-size:1.1rem; margin:0 0 4px; text-align:center; }
+    .sub{ color:var(--muted); font-size:0.85rem; margin-bottom:20px; text-align:center; }
+    .field{ text-align:left; margin-bottom:14px; }
+    label{ display:block; font-size:0.8rem; color:var(--muted); margin-bottom:6px; }
+    input{ width:100%; padding:11px 12px; border-radius:8px; border:1px solid var(--border); background:#0d0d0d; color:var(--text); font-size:0.95rem; }
+    input:focus{ outline:none; border-color:var(--accent); }
+    button{
+        width:100%; padding:12px; border-radius:8px; border:none; background:var(--accent);
+        color:#04101c; font-weight:600; font-size:0.95rem; cursor:pointer; margin-top:6px;
+    }
+    button:disabled{ opacity:0.5; cursor:default; }
+    button.secondary{ background:transparent; border:1px solid var(--border); color:var(--text); }
+    .msg{ font-size:0.85rem; margin-top:12px; min-height:1.2em; }
+    .msg.error{ color:var(--danger); }
+    .msg.ok{ color:var(--ok); }
+    .hidden{ display:none !important; }
+    .file-row{
+        display:flex; align-items:center; gap:12px; padding:12px; border:1px solid var(--border);
+        border-radius:10px; margin-bottom:8px; background:#0d0d0d;
+    }
+    .file-icon{ font-size:1.4rem; }
+    .file-name{ flex:1; font-size:0.9rem; word-break:break-all; }
+    .file-actions{ display:flex; gap:6px; }
+    .file-actions button{ width:auto; padding:8px 12px; font-size:0.8rem; margin:0; }
+    .warn{
+        font-size:0.78rem; color:var(--muted); background:#0d0d0d; border:1px solid var(--border);
+        border-radius:8px; padding:10px 12px; margin-top:14px; text-align:left;
+    }
+    .preview{ max-width:100%; border-radius:8px; margin-top:10px; display:none; }
+    .preview.shown{ display:block; }
+</style>
+</head>
+<body>
+<div class="shell">
+<div class="card" id="shell">
+    <div class="lock">🔒</div>
+    <h1 id="titleText">Encrypted Vault</h1>
+    <div class="sub" id="subText">Checking link…</div>
+
+    <div id="gateStep" class="hidden">
+        <div class="field"><label>TVFS username</label><input type="text" id="gateUsername" autocomplete="username"></div>
+        <div class="field"><label>TVFS password</label><input type="password" id="gatePassword" autocomplete="current-password"></div>
+        <button id="gateLoginBtn">Log in</button>
+        <div class="msg" id="gateMsg"></div>
+    </div>
+
+    <div id="passwordStep" class="hidden">
+        <div class="field"><label>Vault password</label><input type="password" id="filePassword" autocomplete="off"></div>
+        <button id="verifyBtn">Verify &amp; Unlock</button>
+        <div class="msg" id="verifyMsg"></div>
+    </div>
+</div>
+
+<div id="fileListCard" class="card hidden">
+    <div class="sub" id="fileListSub" style="margin-bottom:14px;"></div>
+    <div id="fileList"></div>
+    <button id="downloadAllBtn" style="margin-top:10px;">Download all</button>
+    <div class="warn" id="singleUseWarn" style="display:none;">⚠️ This was a single-use link — it's now unlocked for this visit only. Reloading or revisiting will no longer work, so grab everything you need now.</div>
+</div>
+</div>
+
+<script src="/opaque-client-bundle.js"></script>
+<script src="/encryptedCrypto.js"></script>
+<script>
+(function(){
+    const API = '/api/encrypted/vault';
+    const vaultId = __VAULT_ID_JSON__;
+
+    const el = id => document.getElementById(id);
+    const show = id => el(id).classList.remove('hidden');
+    const hide = id => el(id).classList.add('hidden');
+    const setMsg = (id, text, kind) => { const n = el(id); n.textContent = text || ''; n.className = 'msg' + (kind ? ' ' + kind : ''); };
+
+    let meta = null;
+    let accessToken = null;
+    let password = null;
+    let keychain = null; // [{i, name, cat, key}]
+
+    async function boot() {
+        try {
+            const res = await fetch(`${API}/${vaultId}/meta`);
+            if (!res.ok) throw new Error((await res.json()).error || 'Not found');
+            meta = await res.json();
+        } catch (e) {
+            el('titleText').textContent = 'Link unavailable';
+            el('subText').textContent = e.message || 'This vault does not exist or has expired.';
+            return;
+        }
+
+        el('subText').textContent = `${meta.fileCount} encrypted file${meta.fileCount === 1 ? '' : 's'} — nothing is revealed until you unlock it.`;
+
+        if (meta.singleUse && meta.consumed) {
+            el('titleText').textContent = 'Already used';
+            el('subText').textContent = 'This was a single-use vault and has already been unlocked once.';
+            return;
+        }
+
+        if (meta.tvfsUsersOnly) {
+            try {
+                const res = await fetch(`${API}/${vaultId}/login`, {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({})
+                });
+                if (res.ok) {
+                    accessToken = (await res.json()).accessToken;
+                    show('passwordStep');
+                } else {
+                    show('gateStep');
+                }
+            } catch (e) { show('gateStep'); }
+        } else {
+            show('passwordStep');
+        }
+    }
+
+    el('gateLoginBtn').onclick = async () => {
+        setMsg('gateMsg', '');
+        const username = el('gateUsername').value.trim();
+        const pw = el('gatePassword').value;
+        if (!username || !pw) return setMsg('gateMsg', 'Enter both fields', 'error');
+        el('gateLoginBtn').disabled = true;
+        try {
+            const res = await fetch(`${API}/${vaultId}/login`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ username, password: pw })
+            });
+            const data = await res.json();
+            if (!res.ok) return setMsg('gateMsg', data.error || 'Login failed', 'error');
+            accessToken = data.accessToken;
+            hide('gateStep');
+            show('passwordStep');
+        } catch (e) {
+            setMsg('gateMsg', 'Network error', 'error');
+        } finally {
+            el('gateLoginBtn').disabled = false;
+        }
+    };
+
+    el('verifyBtn').onclick = async () => {
+        setMsg('verifyMsg', '');
+        const pw = el('filePassword').value;
+        if (!pw) return setMsg('verifyMsg', 'Enter the password', 'error');
+        el('verifyBtn').disabled = true;
+        setMsg('verifyMsg', 'Verifying…');
+
+        try {
+            const q = meta.tvfsUsersOnly ? `?token=${encodeURIComponent(accessToken)}` : '';
+            let unlockToken;
+
+            let opaqueResult;
+            try {
+                opaqueResult = await TVFSCrypto.opaque.login(
+                    pw, 'files.tomasekvalla.cz',
+                    async (ke1Serialized) => {
+                        const res = await fetch(`${API}/vault/${vaultId}/opaque/login-init`, {
+                            method: 'POST', headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ ke1: ke1Serialized })
+                        });
+                        const d = await res.json();
+                        if (!res.ok) throw new Error(d.error || 'Login failed');
+                        return { ke2Serialized: d.ke2, sessionId: d.sessionId };
+                    },
+                    async (ke3Serialized, sessionId) => {
+                        const res = await fetch(`${API}/vault/${vaultId}/opaque/login-finish`, {
+                            method: 'POST', headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ ke3: ke3Serialized, sessionId })
+                        });
+                        const d = await res.json();
+                        if (!res.ok) return null;
+                        unlockToken = d.unlockToken;
+                        return d.unlockToken;
+                    }
+                );
+            } catch (e) {
+                setMsg('verifyMsg', 'Wrong password', 'error');
+                el('verifyBtn').disabled = false;
+                return;
+            }
+
+            setMsg('verifyMsg', 'Password correct — unlocking…', 'ok');
+            password = opaqueResult.exportKeyB64; // used below as the "password" input to decryptContainer
+
+            // This fetch is the actual "unlock" for single-use vaults —
+            // the server marks it consumed the moment this succeeds.
+            const kcRes = await fetch(`${API}/vault/${vaultId}/keychain?unlock=${encodeURIComponent(unlockToken)}${meta.tvfsUsersOnly ? `&token=${encodeURIComponent(accessToken)}` : ''}`);
+            if (!kcRes.ok) throw new Error((await kcRes.json()).error || 'Could not fetch keychain');
+            const kcBuf = await kcRes.arrayBuffer();
+            const kcPlain = await TVFSCrypto.decryptContainer(password, kcBuf);
+            keychain = JSON.parse(new TextDecoder().decode(kcPlain));
+            window.__vaultUnlockToken = unlockToken; // used by file downloads below
+
+            renderFileList();
+            hide('shell');
+            show('fileListCard');
+            if (meta.singleUse) el('singleUseWarn').style.display = 'block';
+        } catch (e) {
+            setMsg('verifyMsg', e.message || 'Something went wrong', 'error');
+            el('verifyBtn').disabled = false;
+        }
+    };
+
+    function categoryIcon(cat) {
+        if (cat === 'audio') return '🎵';
+        if (cat === 'video') return '🎬';
+        if (cat === 'image') return '🖼️';
+        if (cat === 'text') return '📄';
+        return '📦';
+    }
+
+    async function fetchAndDecryptFile(entry) {
+        const unlockToken = window.__vaultUnlockToken;
+        const params = new URLSearchParams({ unlock: unlockToken });
+        if (meta.tvfsUsersOnly) params.set('token', accessToken);
+        const res = await fetch(`${API}/${vaultId}/file/${entry.i}?${params.toString()}`);
+        if (!res.ok) throw new Error('Download failed for ' + entry.name);
+        const containerBuf = await res.arrayBuffer();
+        // Per-file keys are already high-entropy random strings — reused
+        // here as the "password" input to the same PBKDF2+AES-GCM
+        // primitives everything else uses. No new crypto code needed.
+        const plainBuf = await TVFSCrypto.decryptContainer(entry.key, containerBuf);
+        return new Blob([plainBuf]);
+    }
+
+    function triggerDownload(blob, name) {
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url; a.download = name || 'file';
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 30000);
+    }
+
+    function renderFileList() {
+        el('fileListSub').textContent = `${keychain.length} file${keychain.length === 1 ? '' : 's'} unlocked`;
+        const list = el('fileList');
+        list.innerHTML = '';
+        keychain.forEach((entry) => {
+            const row = document.createElement('div');
+            row.className = 'file-row';
+            row.innerHTML = `
+                <span class="file-icon">${categoryIcon(entry.cat)}</span>
+                <span class="file-name">${escapeHtml(entry.name || '(unnamed)')}</span>
+                <span class="file-actions">
+                    <button data-act="view">View</button>
+                    <button data-act="dl">Download</button>
+                </span>
+            `;
+            const img = document.createElement('img');
+            img.className = 'preview';
+            row.appendChild(img);
+
+            row.querySelector('[data-act="view"]').onclick = async (e) => {
+                e.target.disabled = true;
+                try {
+                    const blob = await fetchAndDecryptFile(entry);
+                    if (entry.cat === 'image') {
+                        img.src = URL.createObjectURL(blob);
+                        img.classList.add('shown');
+                    } else if (entry.cat === 'audio' || entry.cat === 'video') {
+                        const media = document.createElement(entry.cat);
+                        media.controls = true;
+                        media.src = URL.createObjectURL(blob);
+                        media.style.width = '100%';
+                        media.style.marginTop = '10px';
+                        row.appendChild(media);
+                    } else {
+                        triggerDownload(blob, entry.name);
+                    }
+                } catch (err) {
+                    alert(err.message);
+                } finally {
+                    e.target.disabled = false;
+                }
+            };
+            row.querySelector('[data-act="dl"]').onclick = async (e) => {
+                e.target.disabled = true;
+                try {
+                    const blob = await fetchAndDecryptFile(entry);
+                    triggerDownload(blob, entry.name);
+                } catch (err) {
+                    alert(err.message);
+                } finally {
+                    e.target.disabled = false;
+                }
+            };
+            list.appendChild(row);
+        });
+    }
+
+    el('downloadAllBtn').onclick = async () => {
+        el('downloadAllBtn').disabled = true;
+        el('downloadAllBtn').textContent = 'Downloading…';
+        for (let i = 0; i < keychain.length; i++) {
+            try {
+                const blob = await fetchAndDecryptFile(keychain[i]);
+                triggerDownload(blob, keychain[i].name);
+                await new Promise(r => setTimeout(r, 400)); // stagger — browsers can block rapid-fire downloads
+            } catch (e) { /* keep going with the rest */ }
+        }
+        el('downloadAllBtn').disabled = false;
+        el('downloadAllBtn').textContent = 'Download all';
+    };
+
+    function escapeHtml(s) {
+        return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    }
+
+    boot();
+})();
+</script>
+</body>
+</html>

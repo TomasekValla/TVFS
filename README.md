@@ -4,6 +4,8 @@ Self hosted, open source file distribution. No cloud, no compression, no surveil
 
 `files.tomasekvalla.cz`
 
+[![Vibecoded with Claude](https://img.shields.io/badge/vibecoded%20with-Claude-D97757?style=flat-square)](https://claude.ai)
+
 ## The idea
 
 Every mainstream file sharing platform quietly recompresses, retranscodes, or reprocesses whatever you upload, and keeps it around long after you're done with it. TVFS does neither. It stores files exactly as uploaded, streams them at full quality, and deletes them on a schedule you choose. The server is hardware you own. The files are yours the whole way through.

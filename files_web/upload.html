@@ -684,33 +684,6 @@
         .pause-btn:hover { border-color: var(--accent-primary); background: rgba(176,131,255,0.08); }
         .pause-btn.is-paused { border-color: var(--accent-secondary); color: var(--accent-secondary); background: rgba(47,255,196,0.08); }
 
-        /* Same footprint/radius/palette as .pause-btn — only the thumb and
-           label creep toward red as you actually drag it. No trailing fill
-           bar (that read as a smear/leftover line once you let go). */
-        .kill-slider {
-            position: relative; width: 100%; height: 46px; border-radius: 14px;
-            background: var(--glass-bg); border: 1px solid var(--glass-border);
-            overflow: hidden; touch-action: none; user-select: none; cursor: pointer;
-            transition: border-color 0.15s, background 0.15s;
-        }
-        .kill-slider-label {
-            position: absolute; inset: 0; pointer-events: none;
-        }
-        .kill-slider-label span {
-            position: absolute; top: 50%; left: 46px; right: 10px; transform: translateY(-50%);
-            text-align: center; line-height: 1.15;
-            color: var(--text-main); font-size: 0.82rem; font-weight: 700; letter-spacing: 0.01em;
-            transition: opacity 0.12s linear;
-        }
-        .kill-slider-label span small { display: block; font-size: 0.6rem; font-weight: 600; opacity: 0.85; margin-top: 2px; }
-        .kill-slider-label .kill-label-confirm { color: #ff6b6b; opacity: 0; }
-        .kill-slider-thumb {
-            position: absolute; top: 3px; left: 3px; width: 40px; height: 40px; border-radius: 10px;
-            background: var(--glass-border); color: var(--text-main); display: flex; align-items: center; justify-content: center;
-            font-size: 1rem; font-weight: 800; transition: left 0.18s ease-out, background 0.12s linear, color 0.12s linear;
-        }
-        .kill-slider.dragging .kill-slider-thumb { transition: background 0.12s linear, color 0.12s linear; }
-
         .recent-delete-btn { color: #ff6b6b; }
         .recent-delete-btn:hover { background: rgba(255,99,99,0.12); }
 
@@ -1251,14 +1224,7 @@
 
             <button class="action-btn" id="uploadBtn">Upload Files</button>
             <div class="upload-live-controls" id="uploadLiveControls">
-                <button class="pause-btn" id="pauseBtn" type="button">Pause</button>
-                <div class="kill-slider" id="killSlider">
-                    <div class="kill-slider-label" id="killSliderLabel">
-                        <span class="kill-label-idle" id="killLabelIdle">Slide to kill upload</span>
-                        <span class="kill-label-confirm" id="killLabelConfirm">Kill upload<small>and delete the remains on server</small></span>
-                    </div>
-                    <div class="kill-slider-thumb" id="killSliderThumb">✕</div>
-                </div>
+                <button class="pause-btn" id="cancelUploadBtn" type="button">Cancel upload</button>
             </div>
 
             <div class="progress-container" id="progressSection">
@@ -1478,7 +1444,7 @@
         <div class="cookie-picker-card confirm-delete-card">
             <h3 id="confirmDeleteTitle">🗑️ Delete this file?</h3>
             <p id="confirmDeleteText">This will permanently delete it from the server right now. This can't be undone.</p>
-            <p class="confirm-shift-note">Tip: hold <strong>Shift</strong> while clicking delete next time to skip this prompt.</p>
+            <p class="confirm-shift-note" id="confirmDeleteShiftNote">Tip: hold <strong>Shift</strong> while clicking delete next time to skip this prompt.</p>
             <div class="cookie-picker-btns">
                 <button class="confirm-danger-btn" id="confirmDeleteYesBtn">Yes, delete it</button>
             </div>
@@ -1782,12 +1748,7 @@
             dropZone:      document.getElementById('uploadArea'),
             uploadBtn:     document.getElementById('uploadBtn'),
             uploadLiveControls: document.getElementById('uploadLiveControls'),
-            pauseBtn:      document.getElementById('pauseBtn'),
-            killSlider:    document.getElementById('killSlider'),
-            killSliderLabel: document.getElementById('killSliderLabel'),
-            killLabelIdle: document.getElementById('killLabelIdle'),
-            killLabelConfirm: document.getElementById('killLabelConfirm'),
-            killSliderThumb: document.getElementById('killSliderThumb'),
+            cancelUploadBtn: document.getElementById('cancelUploadBtn'),
             pwInput:       document.getElementById('password'),
             authSection:   document.getElementById('authSection'),
             errorDisplay:  document.getElementById('errorDisplay'),
@@ -2898,13 +2859,17 @@
         var confirmDeleteTextEl = document.getElementById('confirmDeleteText');
         var confirmDeleteYesBtnEl = document.getElementById('confirmDeleteYesBtn');
         var confirmDeleteNoBtnEl = document.getElementById('confirmDeleteNoBtn');
+        var confirmDeleteShiftNoteEl = document.getElementById('confirmDeleteShiftNote');
         var _pendingConfirmAction = null;
 
         function askToDelete(opts, onConfirm) {
-            // opts: { title, text, shiftKey }
+            // opts: { title, text, shiftKey, shiftNote }
             if (opts.shiftKey) { onConfirm(); return; }
             confirmDeleteTitleEl.textContent = opts.title || '🗑️ Delete this?';
             confirmDeleteTextEl.textContent = opts.text || "This will permanently delete it from the server right now. This can't be undone.";
+            if (confirmDeleteShiftNoteEl) {
+                confirmDeleteShiftNoteEl.innerHTML = opts.shiftNote || 'Tip: hold <strong>Shift</strong> while clicking delete next time to skip this prompt.';
+            }
             _pendingConfirmAction = onConfirm;
             confirmDeleteOverlayEl.classList.add('visible');
         }
@@ -4253,7 +4218,6 @@
             uploadControl.paused = p;
             if (_pauseIdleWatcher) { clearInterval(_pauseIdleWatcher); _pauseIdleWatcher = null; }
             if (p) {
-                if (els.pauseBtn) { els.pauseBtn.textContent = 'Continue'; els.pauseBtn.classList.add('is-paused'); }
                 if (uploadControl.xhrs.size > 0) {
                     if (els.progStatus) els.progStatus.textContent = 'Finishing current chunk…';
                     _pauseIdleWatcher = setInterval(function() {
@@ -4268,7 +4232,6 @@
                 }
             } else {
                 releasePauseWaiters();
-                if (els.pauseBtn) { els.pauseBtn.textContent = 'Pause'; els.pauseBtn.classList.remove('is-paused'); }
                 if (els.progStatus) els.progStatus.textContent = 'Uploading...';
             }
         }
@@ -4277,8 +4240,7 @@
             if (!els.uploadLiveControls) return;
             els.uploadBtn.style.display = 'none';
             els.uploadLiveControls.classList.add('visible');
-            if (els.pauseBtn) { els.pauseBtn.textContent = 'Pause'; els.pauseBtn.classList.remove('is-paused'); }
-            resetKillSlider();
+            if (els.cancelUploadBtn) { els.cancelUploadBtn.textContent = 'Cancel upload'; els.cancelUploadBtn.disabled = false; }
         }
 
         function hideUploadLiveControls() {
@@ -4287,81 +4249,42 @@
             els.uploadLiveControls.classList.remove('visible');
         }
 
-        if (els.pauseBtn) {
-            els.pauseBtn.addEventListener('click', function() {
+        // ── Cancel upload button ────────────────────────────────────
+        // Clicking it pauses immediately (so nothing new starts sliding in
+        // while the confirm prompt is up), then asks for confirmation via
+        // the same askToDelete() modal + shift-skip pattern used elsewhere.
+        // Declining un-pauses and resumes normally.
+        if (els.cancelUploadBtn) {
+            els.cancelUploadBtn.addEventListener('click', function(e) {
                 if (uploadControl.killed) return;
-                setUploadPaused(!uploadControl.paused);
+                var wasPaused = uploadControl.paused;
+                setUploadPaused(true);
+                askToDelete({
+                    title: '❌ Cancel upload?',
+                    text: "This will stop the upload. Chunks already sent will be automatically deleted from the server shortly.",
+                    shiftKey: e.shiftKey,
+                    shiftNote: 'Tip: hold <strong>Shift</strong> next time to cancel immediately, no prompt.'
+                }, function() {
+                    killCurrentUpload();
+                });
+                // If the modal was skipped via shift, killCurrentUpload() has
+                // already run by the time we get here — this branch only
+                // matters when the user later hits Cancel/dismiss on the modal.
+                if (!e.shiftKey) {
+                    var noBtn = document.getElementById('confirmDeleteNoBtn');
+                    var overlay = document.getElementById('confirmDeleteOverlay');
+                    var onCancelDismiss = function() {
+                        if (!uploadControl.killed) setUploadPaused(wasPaused);
+                        if (noBtn) noBtn.removeEventListener('click', onCancelDismiss);
+                        if (overlay) overlay.removeEventListener('click', onOverlayDismiss);
+                    };
+                    var onOverlayDismiss = function(ev) {
+                        if (ev.target === overlay) onCancelDismiss();
+                    };
+                    if (noBtn) noBtn.addEventListener('click', onCancelDismiss);
+                    if (overlay) overlay.addEventListener('click', onOverlayDismiss);
+                }
             });
-        }
-
-        // ── Kill slider ──────────────────────────────────────────────
-        var killDragState = { active: false, startX: 0, maxTravel: 0 };
-        var KILL_THRESHOLD = 0.92;
-
-        function resetKillSlider() {
-            if (!els.killSlider) return;
-            els.killSlider.classList.remove('dragging');
-            els.killSlider.style.borderColor = '';
-            els.killSliderThumb.style.left = '3px';
-            els.killSliderThumb.style.background = '';
-            els.killSliderThumb.style.color = '';
-            els.killLabelIdle.style.opacity = '1';
-            els.killLabelConfirm.style.opacity = '0';
-        }
-
-        function killSliderPointerDown(e) {
-            if (uploadControl.killed) return;
-            killDragState.active = true;
-            killDragState.startX = (e.touches ? e.touches[0].clientX : e.clientX);
-            killDragState.maxTravel = els.killSlider.clientWidth - els.killSliderThumb.clientWidth - 6;
-            els.killSlider.classList.add('dragging');
-            setUploadPaused(true); // merely touching it pauses immediately
-            e.preventDefault();
-        }
-
-        function killSliderPointerMove(e) {
-            if (!killDragState.active) return;
-            var x = (e.touches ? e.touches[0].clientX : e.clientX);
-            var delta = Math.max(0, Math.min(x - killDragState.startX, killDragState.maxTravel));
-            var frac = killDragState.maxTravel > 0 ? delta / killDragState.maxTravel : 0;
-            els.killSliderThumb.style.left = (3 + delta) + 'px';
-
-            // Smooth crossfade between the two labels instead of a hard swap.
-            var crossStart = 0.35, crossEnd = 0.85;
-            var crossT = Math.max(0, Math.min((frac - crossStart) / (crossEnd - crossStart), 1));
-            els.killLabelIdle.style.opacity = String(1 - crossT);
-            els.killLabelConfirm.style.opacity = String(crossT);
-
-            var r = Math.round(120 + frac * 135), g = Math.round(120 - frac * 13), b = Math.round(120 - frac * 13);
-            els.killSliderThumb.style.background = 'rgb(' + r + ',' + g + ',' + b + ')';
-            els.killSliderThumb.style.color = frac > 0.4 ? '#fff' : 'var(--text-main)';
-            els.killSlider.style.borderColor = frac > 0.5 ? 'rgba(255,99,99,' + (0.3 + frac * 0.4) + ')' : '';
-        }
-
-        function killSliderPointerUp(e) {
-            if (!killDragState.active) return;
-            killDragState.active = false;
-            els.killSlider.classList.remove('dragging');
-            var frac = killDragState.maxTravel > 0
-                ? parseFloat(els.killSliderThumb.style.left) / killDragState.maxTravel
-                : 0;
-
-            if (frac >= KILL_THRESHOLD) {
-                killCurrentUpload();
-            } else {
-                resetKillSlider();
-                els.killSlider.style.borderColor = '';
-                setUploadPaused(false);
-            }
-        }
-
-        if (els.killSlider) {
-            els.killSlider.addEventListener('mousedown', killSliderPointerDown);
-            els.killSlider.addEventListener('touchstart', killSliderPointerDown, { passive: false });
-            window.addEventListener('mousemove', killSliderPointerMove);
-            window.addEventListener('touchmove', killSliderPointerMove, { passive: false });
-            window.addEventListener('mouseup', killSliderPointerUp);
-            window.addEventListener('touchend', killSliderPointerUp);
         }
 
         // Kill needs to FEEL instant even though the actual server-side wipe
@@ -4376,12 +4299,8 @@
                                              // what made "kill" feel like it took forever.
             abortAllTrackedXhrs();          // everything, including the small-file path
 
-            if (els.progStatus) els.progStatus.textContent = 'Killed';
-            if (els.killLabelIdle) els.killLabelIdle.style.opacity = '0';
-            if (els.killLabelConfirm) {
-                els.killLabelConfirm.style.opacity = '1';
-                els.killLabelConfirm.innerHTML = 'Killed';
-            }
+            if (els.progStatus) els.progStatus.textContent = 'Cancelled';
+            if (els.cancelUploadBtn) { els.cancelUploadBtn.textContent = 'Cancelled'; els.cancelUploadBtn.disabled = true; }
 
             var idToWipe = uploadControl.uploadId;
             if (idToWipe) {

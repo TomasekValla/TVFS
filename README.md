@@ -4,7 +4,7 @@ Self hosted, open source file distribution. No cloud, no compression, no surveil
 
 `files.tomasekvalla.cz`
 
-[![Vibecoded with Claude](https://img.shields.io/badge/vibecoded%20with-Claude-D97757?style=flat-square)](https://claude.ai)
+[![Vibecoded with Claude](https://img.shields.io/badge/vibecoded%20with-Claude-D97757?style=flat-square)](https://claude.ai) [![Vibecoded with Antigravity](https://img.shields.io/badge/vibecoded%20with-Antigravity-4285F4?style=flat-square)](https://antigravity.google/)
 
 ## The idea
 

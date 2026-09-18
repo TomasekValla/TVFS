@@ -1,6 +1,8 @@
 'use strict';
 
 const crypto = require('crypto');
+const path = require('path');
+require('dotenv').config({ path: path.join(__dirname, '.env'), override: true });
 
 function sha256(str) {
     return crypto.createHash('sha256').update(str).digest('hex');
@@ -62,14 +64,14 @@ function parseUserList(envVal) {
     }).filter(Boolean);
 }
 
-const tier1Users = parseUserList(process.env.TIER1_USERS);
-const tier2Users = parseUserList(process.env.TIER2_USERS);
-
-// Fail loud, not silent, if duplicate codenames exist across tiers.
-const allNames = [...tier1Users, ...tier2Users].map(u => u.username);
-const dupes = allNames.filter((n, i) => allNames.indexOf(n) !== i);
-if (dupes.length) {
-    console.warn(`⚠️  [USER IDENTITY] Duplicate codenames in TIER1_USERS/TIER2_USERS: ${[...new Set(dupes)].join(', ')}`);
+function getActiveUsers() {
+    // If neither tier is configured in process.env, ensure .env from this dir is loaded
+    if (!process.env.TIER1_USERS && !process.env.TIER2_USERS) {
+        require('dotenv').config({ path: path.join(__dirname, '.env'), override: true });
+    }
+    const tier1 = parseUserList(process.env.TIER1_USERS);
+    const tier2 = parseUserList(process.env.TIER2_USERS);
+    return { tier1, tier2 };
 }
 
 // Checks BOTH the secret username and the password together — a scanner
@@ -80,10 +82,12 @@ function findUser(username, password) {
     const uHash = sha256(String(username).trim());
     const pHash = sha256(String(password));
 
-    const t2 = tier2Users.find(u => timingSafeHexEqual(u.userHash, uHash) && timingSafeHexEqual(u.passHash, pHash));
+    const { tier1, tier2 } = getActiveUsers();
+
+    const t2 = tier2.find(u => timingSafeHexEqual(u.userHash, uHash) && timingSafeHexEqual(u.passHash, pHash));
     if (t2) return { tier: 2, username: t2.username };
 
-    const t1 = tier1Users.find(u => timingSafeHexEqual(u.userHash, uHash) && timingSafeHexEqual(u.passHash, pHash));
+    const t1 = tier1.find(u => timingSafeHexEqual(u.userHash, uHash) && timingSafeHexEqual(u.passHash, pHash));
     if (t1) return { tier: 1, username: t1.username };
 
     return null;
@@ -95,3 +99,4 @@ function sanitizeUsername(username) {
 }
 
 module.exports = { findUser, sanitizeUsername, sha256 };
+

@@ -1,4 +1,10 @@
-require('dotenv').config();
+const path = require('path');
+const dotenvResult = require('dotenv').config({ path: path.join(__dirname, '.env'), override: true });
+if (dotenvResult.error) {
+    console.warn('⚠️  [ENV] Failed to load .env from', path.join(__dirname, '.env'), dotenvResult.error.message);
+} else {
+    console.log('🔐 [ENV] Loaded .env from', path.join(__dirname, '.env'), `(TIER1: ${Boolean(process.env.TIER1_USERS)}, TIER2: ${Boolean(process.env.TIER2_USERS)})`);
+}
 
 // ─── Global crash safety net ────────────────────────────────────────────
 // Registered FIRST, before any other require() below — a synchronous

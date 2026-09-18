@@ -1602,7 +1602,7 @@ router.get('/user/sync', (req, res) => {
 // ─── POST /api/verify-password ───────────────────────────────────────────────
 
 router.post('/verify-password', rateLimit({ windowMs: 15 * 60 * 1000, max: 10, keyPrefix: 'login:' }), (req, res) => {
-    const { username, password } = req.body;
+    const { username, password } = req.body || {};
     if (!username || !password) {
         return res.status(400).json({ valid: false, tier: 0 });
     }
@@ -1622,7 +1622,7 @@ router.post('/verify-password', rateLimit({ windowMs: 15 * 60 * 1000, max: 10, k
 // The password hash is NEVER stored in a cookie — only the opaque session token.
 
 router.post('/auth', rateLimit({ windowMs: 15 * 60 * 1000, max: 10, keyPrefix: 'login:' }), (req, res) => {
-    const { username, password, remember } = req.body;
+    const { username, password, remember } = req.body || {};
 
     if (!username || !password) {
         return res.status(400).json({ valid: false, error: 'Username and password required' });

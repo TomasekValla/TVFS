@@ -711,20 +711,272 @@
         .per-file-progress { display: none; flex-direction: column; gap: 6px; margin-top: 4px; }
         .per-file-progress.visible { display: flex; }
 
-        .funfact-box {
-            display: flex; align-items: flex-start; gap: 6px;
-            margin-top: 2px; max-height: 0; opacity: 0; overflow: hidden;
-            transition: max-height 0.5s ease, opacity 0.4s ease, margin-top 0.4s ease;
-            font-size: 0.74rem; line-height: 1.35; color: var(--text-secondary);
+        /* ============================================================
+           UPLOAD PERFORMANCE & STATS CARD (Liquid Glass)
+           ============================================================ */
+        .upload-stats-card {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            width: 100%;
+            padding: 16px 18px 18px;
+            position: relative;
+            overflow: hidden;
+            background: var(--glass-bg);
+            backdrop-filter: blur(22px) saturate(170%);
+            -webkit-backdrop-filter: blur(22px) saturate(170%);
+            border: 1px solid var(--glass-border);
+            border-radius: 20px;
+            box-shadow: 0 14px 36px -10px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+            box-sizing: border-box;
+            transition: opacity 0.35s cubic-bezier(0.16, 1, 0.3, 1),
+                        transform 0.35s cubic-bezier(0.16, 1, 0.3, 1),
+                        max-height 0.4s cubic-bezier(0.16, 1, 0.3, 1),
+                        margin 0.35s ease, padding 0.35s ease, border-color 0.35s ease;
+            max-height: 540px;
+            opacity: 1;
         }
-        .funfact-box.show { max-height: 60px; opacity: 0.95; margin-top: 6px; }
-        .funfact-icon { flex-shrink: 0; opacity: 0.75; filter: drop-shadow(0 0 4px rgba(47, 255, 196, 0.25)); }
-        .funfact-text { white-space: normal; }
-        .funfact-text.typing::after {
-            content: '▍'; margin-left: 1px; color: var(--accent-secondary);
-            animation: funfactBlink 0.85s steps(1) infinite;
+        .upload-stats-card.entering {
+            animation: statsCardEnter 0.42s cubic-bezier(0.16, 1, 0.3, 1) both;
         }
-        @keyframes funfactBlink { 0%, 49% { opacity: 1; } 50%, 100% { opacity: 0; } }
+        .upload-stats-card.leaving {
+            opacity: 0 !important;
+            transform: translateY(-8px) scale(0.97) !important;
+            max-height: 0 !important;
+            margin-top: 0 !important;
+            margin-bottom: 0 !important;
+            padding-top: 0 !important;
+            padding-bottom: 0 !important;
+            border-width: 0 !important;
+            pointer-events: none !important;
+        }
+        @keyframes statsCardEnter {
+            0% {
+                opacity: 0;
+                transform: translateY(-12px) scale(0.96);
+            }
+            100% {
+                opacity: 1;
+                transform: translateY(0) scale(1);
+            }
+        }
+        .stats-card-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .stats-card-title-group {
+            display: flex;
+            align-items: center;
+            gap: 7px;
+        }
+        .stats-card-icon {
+            font-size: 0.95rem;
+            filter: drop-shadow(0 0 6px rgba(47, 255, 196, 0.4));
+        }
+        .stats-card-title {
+            font-size: 0.66rem;
+            font-weight: 800;
+            text-transform: uppercase;
+            letter-spacing: 0.11em;
+            color: var(--text-secondary);
+        }
+        .stats-card-close {
+            background: transparent;
+            border: none;
+            color: var(--text-secondary);
+            cursor: pointer;
+            font-size: 0.85rem;
+            padding: 2px 7px;
+            border-radius: 8px;
+            line-height: 1;
+            transition: all 0.15s ease;
+        }
+        .stats-card-close:hover {
+            color: var(--text-main);
+            background: rgba(255, 255, 255, 0.09);
+        }
+        .stats-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+        }
+        .stats-tile {
+            display: flex;
+            flex-direction: column;
+            gap: 3px;
+            padding: 10px 12px;
+            background: rgba(255, 255, 255, 0.035);
+            border: 1px solid var(--glass-border);
+            border-radius: 14px;
+        }
+        .light-mode .stats-tile {
+            background: rgba(0, 0, 0, 0.025);
+        }
+        .stats-tile-label {
+            font-size: 0.6rem;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            font-weight: 700;
+            color: var(--text-secondary);
+        }
+        .stats-tile-val {
+            font-size: 1.15rem;
+            font-weight: 900;
+            color: var(--text-main);
+            letter-spacing: -0.02em;
+            line-height: 1.2;
+        }
+        .stats-tile-sub {
+            font-size: 0.72rem;
+            color: var(--text-secondary);
+            font-weight: 600;
+        }
+        .stats-comparison-row {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            padding: 8px 12px;
+            border-radius: 12px;
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid var(--glass-border);
+        }
+        .stats-comparison-top {
+            display: flex;
+            align-items: baseline;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+        .stats-comparison-badge {
+            padding: 2px 7px;
+            border-radius: 6px;
+            font-size: 0.68rem;
+            font-weight: 800;
+            white-space: nowrap;
+            flex-shrink: 0;
+        }
+        .stats-comparison-badge.faster {
+            background: rgba(47, 255, 196, 0.16);
+            color: var(--status-good);
+            border: 1px solid rgba(47, 255, 196, 0.35);
+        }
+        .stats-comparison-badge.slower {
+            background: rgba(255, 107, 107, 0.16);
+            color: var(--status-bad);
+            border: 1px solid rgba(255, 107, 107, 0.35);
+        }
+        .stats-comparison-badge.same {
+            background: rgba(176, 131, 255, 0.16);
+            color: var(--accent-primary);
+            border: 1px solid rgba(176, 131, 255, 0.35);
+        }
+        .stats-comparison-headline {
+            font-size: 0.76rem;
+            font-weight: 700;
+            color: var(--text-main);
+        }
+        .stats-comparison-sub {
+            font-size: 0.68rem;
+            color: var(--text-secondary);
+            font-weight: 500;
+        }
+        .stats-fun-pill {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 0.74rem;
+            line-height: 1.35;
+            color: var(--text-main);
+            padding: 8px 12px;
+            border-radius: 12px;
+            background: linear-gradient(135deg, rgba(47, 255, 196, 0.08) 0%, rgba(176, 131, 255, 0.08) 100%);
+            border: 1px solid var(--glass-border);
+        }
+        .stats-fun-icon {
+            font-size: 0.9rem;
+            flex-shrink: 0;
+        }
+        .stats-fun-text {
+            flex: 1;
+        }
+        .stats-nowrap {
+            display: inline-block;
+            white-space: nowrap !important;
+        }
+        .stats-breakdown {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            padding-top: 8px;
+            border-top: 1px solid var(--glass-border);
+        }
+        .stats-breakdown-block {
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+        }
+        .stats-breakdown-label {
+            font-size: 0.60rem;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            font-weight: 700;
+            color: var(--text-secondary);
+        }
+        .stats-metric-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 6px;
+            width: 100%;
+        }
+        .stats-metric-col {
+            display: flex;
+            flex-direction: column;
+            align-items: flex-start;
+            gap: 2px;
+            padding: 5px 8px;
+            background: rgba(255, 255, 255, 0.035);
+            border: 1px solid var(--glass-border);
+            border-radius: 9px;
+            min-width: 0;
+        }
+        .light-mode .stats-metric-col {
+            background: rgba(0, 0, 0, 0.025);
+        }
+        .stats-metric-k {
+            font-size: 0.58rem;
+            text-transform: uppercase;
+            letter-spacing: 0.07em;
+            font-weight: 700;
+            color: var(--text-secondary);
+        }
+        .stats-metric-v {
+            font-size: 0.74rem;
+            font-weight: 800;
+            color: var(--text-main);
+            white-space: nowrap;
+            font-variant-numeric: tabular-nums;
+            letter-spacing: -0.01em;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            width: 100%;
+        }
+        .stats-timer-bar {
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            height: 3px;
+            background: rgba(255, 255, 255, 0.06);
+            overflow: hidden;
+        }
+        .stats-timer-fill {
+            height: 100%;
+            width: 100%;
+            background: var(--accent-gradient);
+            transform-origin: left;
+        }
+        .setting-msg-icon { flex-shrink: 0; opacity: 0.85; }
+        @keyframes cursorBlink { 0%, 49% { opacity: 1; } 50%, 100% { opacity: 0; } }
         .per-file-row { display: flex; align-items: center; gap: 8px; }
         .per-file-name { font-size: 0.7rem; color: var(--text-secondary); width: 100px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex-shrink: 0; }
         .per-file-track { flex: 1; height: 4px; background: var(--glass-border); border-radius: 3px; overflow: hidden; }
@@ -858,7 +1110,7 @@
         .setting-msg-box.prevented .setting-msg-text { color: var(--status-bad); }
         .setting-msg-text.typing::after {
             content: '▍'; margin-left: 1px; color: currentColor;
-            animation: funfactBlink 0.85s steps(1) infinite;
+            animation: cursorBlink 0.85s steps(1) infinite;
         }
 
         .setting-explain { font-size: 0.66rem; color: var(--text-secondary); opacity: 0.75; line-height: 1.5; }
@@ -1248,9 +1500,55 @@
 
             </div>
 
-            <div class="funfact-box" id="funfactBox">
-                <span class="funfact-icon">💡</span>
-                <span class="funfact-text" id="funfactText"></span>
+            <div class="upload-stats-card" id="uploadStatsCard" style="display:none;" aria-live="polite">
+                <div class="stats-card-header">
+                    <div class="stats-card-title-group">
+                        <span class="stats-card-icon">⚡</span>
+                        <span class="stats-card-title">Upload Performance</span>
+                    </div>
+                    <button class="stats-card-close" id="uploadStatsCloseBtn" title="Dismiss statistics" aria-label="Dismiss statistics">✕</button>
+                </div>
+
+                <div class="stats-grid">
+                    <div class="stats-tile">
+                        <span class="stats-tile-label">Duration</span>
+                        <span class="stats-tile-val" id="statsElapsedVal">--</span>
+                        <span class="stats-tile-sub">time elapsed</span>
+                    </div>
+                    <div class="stats-tile">
+                        <span class="stats-tile-label">Average Speed</span>
+                        <span class="stats-tile-val" id="statsSpeedMBVal">--</span>
+                        <span class="stats-tile-sub" id="statsSpeedMbpsVal">--</span>
+                    </div>
+                </div>
+
+                <div class="stats-comparison-row" id="statsComparisonRow" style="display:none;">
+                    <div class="stats-comparison-top">
+                        <span class="stats-comparison-badge" id="statsComparisonBadge"></span>
+                        <span class="stats-comparison-headline" id="statsComparisonHeadline"></span>
+                    </div>
+                    <div class="stats-comparison-sub" id="statsComparisonSub"></div>
+                </div>
+
+                <div class="stats-fun-pill" id="statsFunPill">
+                    <span class="stats-fun-icon">📦</span>
+                    <span class="stats-fun-text" id="statsFunText">1 GB would upload in --</span>
+                </div>
+
+                <div class="stats-breakdown" id="statsBreakdownSection">
+                    <div class="stats-breakdown-block" id="statsSpeedBreakdownRow" style="display:none;">
+                        <span class="stats-breakdown-label">Speed Details</span>
+                        <div class="stats-metric-grid" id="statsSpeedValsWrap"></div>
+                    </div>
+                    <div class="stats-breakdown-block" id="statsPingBreakdownRow" style="display:none;">
+                        <span class="stats-breakdown-label">Upload Latency</span>
+                        <div class="stats-metric-grid" id="statsPingValsWrap"></div>
+                    </div>
+                </div>
+
+                <div class="stats-timer-bar">
+                    <div class="stats-timer-fill" id="statsTimerFill"></div>
+                </div>
             </div>
 
             <div class="error-message" id="errorDisplay"></div>
@@ -1368,7 +1666,7 @@
                     </div>
                 </div>
                 <div class="setting-msg-box" id="chunkMsgBox">
-                    <span class="funfact-icon">⚠️</span>
+                    <span class="setting-msg-icon">⚠️</span>
                     <span class="setting-msg-text" id="chunkMsgText"></span>
                 </div>
                 <div class="setting-explain">
@@ -1800,8 +2098,8 @@
             cookiePickerOverlay: document.getElementById('cookiePickerOverlay'),
             cookiePickerBtns: document.getElementById('cookiePickerBtns'),
             cookieSkipBtn: document.getElementById('cookieSkipBtn'),
-            funfactBox:    document.getElementById('funfactBox'),
-            funfactText:   document.getElementById('funfactText'),
+            uploadStatsCard:     document.getElementById('uploadStatsCard'),
+            uploadStatsCloseBtn: document.getElementById('uploadStatsCloseBtn'),
         };
 
         // ============================================================
@@ -2099,258 +2397,347 @@
         }
 
         // ============================================================
-        // FUNFACT ENGINE
-        // Rotates little "did you know" jokes/facts under the upload
-        // stats, driven by live triggers (instant speed, elapsed time)
-        // and, once the upload finishes, by the final total duration.
-        // Facts + trigger ranges live in /funfacts.json so they can be
-        // grown independently of this code.
+        // UPLOAD PERFORMANCE & STATS ENGINE
+        // Replaces legacy funfacts with a modern liquid-glass upload
+        // performance card tracking duration, throughput (MB/s + Mbps),
+        // device history comparisons, 1 GB transfer estimates,
+        // and upload speed/ping statistics (min/med/avg/max).
+        // Auto-dismisses after 20 seconds.
         // ============================================================
-        var FunfactEngine = (function() {
-            var data = null;           // parsed funfacts.json
-            var loadPromise = null;
-            var rotateTimer = null;    // random 15-30s rotation while uploading
-            var hideTimer = null;      // 15-30s auto-hide after finish
-            var typeTimer = null;      // per-character typing/erasing interval
-            var recentIds = [];        // small ring buffer to avoid immediate repeats
-            var currentSpeedMBps = 0;
-            var currentElapsedS = 0;
-            var currentEtaS = -1;      // -1 = unknown/not yet estimated
-            var active = false;        // engine currently allowed to show things
-            var busy = false;          // mid type/erase animation right now
+        var UploadStatsEngine = (function() {
+            var STORAGE_KEY = 'tvfs_device_upload_history';
+            var startTime = 0;
+            var speedSamples = [];
+            var pingSamples = [];
+            var pingInterval = null;
+            var autoHideTimer = null;
+            var leavingTimer = null;
+            var active = false;
 
-            function loadData() {
-                if (loadPromise) return loadPromise;
-                loadPromise = fetch('/funfacts.json')
-                    .then(function(r) { return r.ok ? r.json() : null; })
-                    .then(function(json) { data = json; return json; })
-                    .catch(function() { data = null; return null; });
-                return loadPromise;
-            }
-
-            function fmtDuration(sec) {
-                if (sec < 1) return Math.round(sec * 1000) + ' ms';
-                if (sec < 60) return (sec < 10 ? sec.toFixed(1) : Math.round(sec)) + ' s';
-                var m = Math.floor(sec / 60), s = Math.round(sec % 60);
-                if (m < 60) return m + ' min' + (s ? ' ' + s + ' s' : '');
-                var h = Math.floor(m / 60); m = m % 60;
-                return h + ' h' + (m ? ' ' + m + ' min' : '');
-            }
-
-            function fmtSpeed(mbps) {
-                return mbps < 1 ? (mbps * 1000).toFixed(0) + ' KB/s' : mbps.toFixed(1) + ' MB/s';
-            }
-
-            function inRange(v, min, max) {
-                return v >= min && (max === null || max === undefined || v < max);
-            }
-
-            function poolsForState() {
-                if (!data || !data.triggers) return [];
-                var pools = [];
-                (data.triggers.speed || []).forEach(function(b) {
-                    if (currentSpeedMBps > 0 && inRange(currentSpeedMBps, b.min, b.max)) {
-                        pools.push({ bucket: b, kind: 'speed', value: currentSpeedMBps });
-                    }
-                });
-                (data.triggers.elapsed || []).forEach(function(b) {
-                    if (inRange(currentElapsedS, b.min, b.max)) {
-                        pools.push({ bucket: b, kind: 'elapsed', value: currentElapsedS });
-                    }
-                });
-                (data.triggers.eta || []).forEach(function(b) {
-                    if (currentEtaS >= 0 && inRange(currentEtaS, b.min, b.max)) {
-                        pools.push({ bucket: b, kind: 'eta', value: currentEtaS });
-                    }
-                });
-                return pools;
-            }
-
-            function poolForFinish(totalSeconds) {
-                if (!data || !data.triggers || !data.triggers.finish) return null;
-                var matches = data.triggers.finish.filter(function(b) {
-                    return inRange(totalSeconds, b.min, b.max);
-                });
-                if (!matches.length) return null;
-                var b = matches[Math.floor(Math.random() * matches.length)];
-                return { bucket: b, kind: 'finish', value: totalSeconds };
-            }
-
-            function pickFact(pools) {
-                if (!pools.length) return null;
-                var candidates = [];
-                pools.forEach(function(p) {
-                    (p.bucket.facts || []).forEach(function(f, i) {
-                        var id = p.bucket.id + ':' + i;
-                        if (recentIds.indexOf(id) === -1) {
-                            candidates.push({ id: id, text: f, pool: p });
+            function samplePing() {
+                var t0 = Date.now();
+                fetch('/api/status', { method: 'GET', credentials: 'include' })
+                    .then(function(r) {
+                        if (r.ok) {
+                            var p = Date.now() - t0;
+                            pingSamples.push(p);
+                            state.lastPing = p;
+                            if (els.pingStatus) {
+                                var pingClass = p < 150 ? 'good' : (p < 400 ? 'warn' : 'bad');
+                                els.pingStatus.innerHTML = '<span class="dot ' + pingClass + '"></span> ' + p + 'ms';
+                            }
                         }
-                    });
-                });
-                if (!candidates.length) {
-                    // everything recently shown — allow repeats again
-                    recentIds = [];
-                    pools.forEach(function(p) {
-                        (p.bucket.facts || []).forEach(function(f, i) {
-                            candidates.push({ id: p.bucket.id + ':' + i, text: f, pool: p });
-                        });
-                    });
-                }
-                if (!candidates.length) return null;
-                var choice = candidates[Math.floor(Math.random() * candidates.length)];
-                recentIds.push(choice.id);
-                if (recentIds.length > 12) recentIds.shift();
-                return choice;
+                    })
+                    .catch(function() {});
             }
 
-            // Whitelist for formula strings — numbers, x, basic arithmetic and a
-            // small set of Math.* helpers. Anything outside this is rejected.
-            var FORMULA_SAFE = /^[0-9x+\-*/(). \tMathsqrtpowminmaxlogexpabsPI,]*$/;
-
-            function safeEval(formula, x) {
-                if (typeof formula !== 'string' || !formula.length || !FORMULA_SAFE.test(formula)) return null;
-                try {
-                    var fn = new Function('x', 'Math', 'return (' + formula + ');');
-                    var r = fn(x, Math);
-                    return (typeof r === 'number' && isFinite(r)) ? r : null;
-                } catch (e) { return null; }
+            function calcMedian(arr) {
+                if (!arr || !arr.length) return 0;
+                var sorted = arr.slice().sort(function(a, b) { return a - b; });
+                var mid = Math.floor(sorted.length / 2);
+                return (sorted.length % 2 !== 0) ? sorted[mid] : ((sorted[mid - 1] + sorted[mid]) / 2);
             }
 
-            function fmtNumber(n, decimals) {
-                var d = (decimals === undefined || decimals === null) ? 1 : decimals;
-                return n.toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d });
+            function calcAvg(arr) {
+                if (!arr || !arr.length) return 0;
+                var s = 0;
+                for (var i = 0; i < arr.length; i++) s += arr[i];
+                return s / arr.length;
             }
 
-            function renderText(choice) {
-                // choice.text can be either a plain string (legacy) or an
-                // object { text, vars } where vars maps placeholder names to
-                // { formula, decimals }. "x" inside a formula is the raw
-                // trigger value (MB/s for speed, seconds for elapsed/eta/finish).
-                var fact = choice.text;
-                var raw = (typeof fact === 'string') ? fact : fact.text;
-                var x = choice.pool.value;
-                var value = choice.pool.kind === 'speed' ? fmtSpeed(x) : fmtDuration(x); // elapsed + eta + finish render as durations
-                var out = raw.split('{value}').join(value);
-
-                if (fact && typeof fact === 'object' && fact.vars) {
-                    Object.keys(fact.vars).forEach(function(name) {
-                        var v = fact.vars[name] || {};
-                        var result = safeEval(v.formula, x);
-                        var rendered = (result === null) ? '?' : fmtNumber(result, v.decimals);
-                        out = out.split('{' + name + '}').join(rendered);
-                    });
-                }
-                return out;
+            function calcMin(arr) {
+                var m = arr[0];
+                for (var i = 1; i < arr.length; i++) if (arr[i] < m) m = arr[i];
+                return m;
             }
 
-            function clearTypeTimer() {
-                if (typeTimer) { clearInterval(typeTimer); typeTimer = null; }
+            function calcMax(arr) {
+                var m = arr[0];
+                for (var i = 1; i < arr.length; i++) if (arr[i] > m) m = arr[i];
+                return m;
             }
 
-            function typeIn(text, done) {
-                clearTypeTimer();
-                busy = true;
-                els.funfactText.textContent = '';
-                els.funfactText.classList.add('typing');
-                var i = 0;
-                var speed = Math.max(10, Math.min(28, Math.floor(900 / Math.max(text.length, 1))));
-                typeTimer = setInterval(function() {
-                    i++;
-                    els.funfactText.textContent = text.slice(0, i);
-                    if (i >= text.length) {
-                        clearTypeTimer();
-                        els.funfactText.classList.remove('typing');
-                        busy = false;
-                        if (done) done();
-                    }
-                }, speed);
-            }
-
-            function eraseOut(done) {
-                clearTypeTimer();
-                busy = true;
-                els.funfactText.classList.add('typing');
-                var text = els.funfactText.textContent;
-                var i = text.length;
-                typeTimer = setInterval(function() {
-                    i--;
-                    els.funfactText.textContent = text.slice(0, Math.max(i, 0));
-                    if (i <= 0) {
-                        clearTypeTimer();
-                        els.funfactText.classList.remove('typing');
-                        busy = false;
-                        if (done) done();
-                    }
-                }, 12);
-            }
-
-            function show(choice) {
-                if (!choice || !els.funfactBox) return;
-                var full = renderText(choice);
-                els.funfactBox.classList.add('show');
-                if (els.funfactText.textContent) {
-                    eraseOut(function() { typeIn(full); });
+            function fmtElapsedStats(sec) {
+                if (sec < 1) {
+                    var v = sec < 0.01 ? 0.01 : sec;
+                    return v.toFixed(2) + ' s';
+                } else if (sec < 60) {
+                    return sec.toFixed(1) + ' s';
                 } else {
-                    typeIn(full);
+                    var m = Math.floor(sec / 60);
+                    var s = Math.round(sec % 60);
+                    if (s === 60) { m += 1; s = 0; }
+                    var sStr = s < 10 ? '0' + s : '' + s;
+                    return m + ' m ' + sStr + ' s';
                 }
             }
 
-            function scheduleRotation() {
-                clearTimeout(rotateTimer);
-                var delay = 10000 + Math.random() * 10000; // 10-20s
-                rotateTimer = setTimeout(function() {
-                    if (!active || busy) { scheduleRotation(); return; }
-                    var choice = pickFact(poolsForState());
-                    if (choice) show(choice);
-                    scheduleRotation();
-                }, delay);
+            function fmt1GBTime(sec) {
+                if (sec < 60) {
+                    return (sec < 10 ? sec.toFixed(1) : Math.round(sec)) + ' s';
+                }
+                var m = Math.floor(sec / 60);
+                var s = Math.round(sec % 60);
+                if (s === 60) { m += 1; s = 0; }
+                if (m < 60) {
+                    return m + ' m ' + (s < 10 ? '0' : '') + s + ' s';
+                }
+                var h = Math.floor(m / 60);
+                m = m % 60;
+                return h + ' h' + (m ? ' ' + m + ' m' : '');
+            }
+
+            function getDeviceHistory() {
+                try {
+                    var raw = localStorage.getItem(STORAGE_KEY);
+                    if (!raw) return null;
+                    var d = JSON.parse(raw);
+                    if (d && typeof d.count === 'number' && d.count > 0 && typeof d.sumMB === 'number') {
+                        return d;
+                    }
+                } catch (e) {}
+                return null;
+            }
+
+            function saveDeviceHistory(avgSpeedMB) {
+                if (typeof avgSpeedMB !== 'number' || !isFinite(avgSpeedMB) || avgSpeedMB <= 0) return;
+                try {
+                    var d = getDeviceHistory() || { count: 0, sumMB: 0 };
+                    d.count += 1;
+                    d.sumMB += avgSpeedMB;
+                    localStorage.setItem(STORAGE_KEY, JSON.stringify(d));
+                } catch (e) {}
             }
 
             function start() {
                 active = true;
-                recentIds = [];
-                currentSpeedMBps = 0;
-                currentElapsedS = 0;
-                currentEtaS = -1;
-                loadData().then(function() {
-                    if (!active) return;
-                    var choice = pickFact(poolsForState());
-                    if (choice) show(choice);
-                    scheduleRotation();
-                });
+                startTime = Date.now();
+                speedSamples = [];
+                pingSamples = [];
+                clearInterval(pingInterval);
+                clearTimeout(autoHideTimer);
+                clearTimeout(leavingTimer);
+
+                // Initial ping sample right at start + interval
+                samplePing();
+                pingInterval = setInterval(samplePing, 2500);
             }
 
-            function feedSpeed(mbps) { currentSpeedMBps = mbps; }
-            function feedElapsed(sec) { currentElapsedS = sec; }
-            function feedEta(sec) { currentEtaS = (typeof sec === 'number' && isFinite(sec) && sec >= 0) ? sec : -1; }
+            function feedSpeed(mbps) {
+                if (typeof mbps === 'number' && isFinite(mbps) && mbps > 0) {
+                    speedSamples.push(mbps);
+                }
+            }
 
-            function finish(totalSeconds) {
+            function finish(totalBytes, optElapsed) {
+                if (!active && !startTime) return;
                 active = false;
-                clearTimeout(rotateTimer);
-                loadData().then(function() {
-                    var choice = poolForFinish(totalSeconds);
-                    var fact = choice ? pickFact([choice]) : null;
-                    if (fact) {
-                        show(fact);
-                        clearTimeout(hideTimer);
-                        var delay = 15000 + Math.random() * 15000;
-                        hideTimer = setTimeout(function() { hide(); }, delay);
-                    } else {
-                        hide();
+                clearInterval(pingInterval);
+
+                var card = els.uploadStatsCard || document.getElementById('uploadStatsCard');
+                if (!card) return;
+
+                var totalElapsed = (typeof optElapsed === 'number' && optElapsed > 0)
+                    ? optElapsed
+                    : Math.max((Date.now() - startTime) / 1000, 0.05);
+
+                // 1. Elapsed duration (<1s: 0.xx s, 1-60s: x.x s, 60+s: x m xx s)
+                var elapsedStr = fmtElapsedStats(totalElapsed);
+                var elElapsed = document.getElementById('statsElapsedVal');
+                if (elElapsed) elElapsed.textContent = elapsedStr;
+
+                // 2. Average speed (in MB/s and Mbps)
+                // Use the true average of active transfer speed samples if available,
+                // so that Min <= Avg <= Max is always mathematically consistent and doesn't
+                // get skewed down by server-side disk write/hash/TTFB response latency.
+                var avgSpeedMB = 0;
+                if (speedSamples.length > 0) {
+                    avgSpeedMB = calcAvg(speedSamples);
+                } else if (totalBytes > 0 && totalElapsed > 0) {
+                    avgSpeedMB = (totalBytes / (1024 * 1024)) / totalElapsed;
+                }
+                var speedMBStr = fmtSpeedMBs(avgSpeedMB);
+                var speedMbpsStr = fmtSpeedMbps(avgSpeedMB);
+
+                var elSpeedMB = document.getElementById('statsSpeedMBVal');
+                if (elSpeedMB) elSpeedMB.textContent = speedMBStr;
+                var elSpeedMbps = document.getElementById('statsSpeedMbpsVal');
+                if (elSpeedMbps) elSpeedMbps.textContent = speedMbpsStr;
+
+                // 3. Historical comparison (on this device via localStorage; omitted on 1st upload)
+                var prevHistory = getDeviceHistory();
+                var rowComp = document.getElementById('statsComparisonRow');
+                var badgeComp = document.getElementById('statsComparisonBadge');
+                var headlineComp = document.getElementById('statsComparisonHeadline');
+                var subComp = document.getElementById('statsComparisonSub');
+
+                if (prevHistory && prevHistory.count > 0 && avgSpeedMB > 0) {
+                    var prevAvg = prevHistory.sumMB / prevHistory.count;
+                    if (prevAvg > 0) {
+                        var diffPct = Math.round(((avgSpeedMB - prevAvg) / prevAvg) * 100);
+                        if (rowComp && badgeComp) {
+                            rowComp.style.display = 'flex';
+                            badgeComp.className = 'stats-comparison-badge ' + (diffPct > 0 ? 'faster' : (diffPct < 0 ? 'slower' : 'same'));
+                            badgeComp.textContent = (diffPct > 0 ? '▲ +' : (diffPct < 0 ? '▼ ' : '• ')) + diffPct + '%';
+                            if (headlineComp) {
+                                headlineComp.textContent = diffPct > 0
+                                    ? (diffPct + '% faster upload speed')
+                                    : (diffPct < 0
+                                        ? (Math.abs(diffPct) + '% lower upload speed')
+                                        : 'Matches your usual upload speed');
+                            }
+                            if (subComp) {
+                                subComp.textContent = 'Device average is ' + fmtSpeedMBs(prevAvg) + ' (' + fmtSpeedMbps(prevAvg) + ')';
+                            }
+                        }
+                    } else if (rowComp) {
+                        rowComp.style.display = 'none';
                     }
-                });
+                } else if (rowComp) {
+                    // First upload: omit this comparison
+                    rowComp.style.display = 'none';
+                }
+
+                // Update device history after reading previous average
+                if (avgSpeedMB > 0) {
+                    saveDeviceHistory(avgSpeedMB);
+                }
+
+                // 4. Fun stat: 1 GB file transfer time
+                var elFunText = document.getElementById('statsFunText');
+                if (elFunText) {
+                    if (avgSpeedMB > 0) {
+                        var sec1GB = 1024 / avgSpeedMB;
+                        var tStr = fmt1GBTime(sec1GB);
+                        elFunText.innerHTML = '1 GB would upload in <strong class="stats-nowrap">' + tStr + '</strong>';
+                    } else {
+                        elFunText.textContent = 'Upload completed in ' + elapsedStr;
+                    }
+                }
+
+                // 5. Speed breakdown (min / med / avg / max)
+                var rowSpeed = document.getElementById('statsSpeedBreakdownRow');
+                var wrapSpeed = document.getElementById('statsSpeedValsWrap');
+                if (speedSamples.length >= 3 && rowSpeed && wrapSpeed) {
+                    var sMin = calcMin(speedSamples);
+                    var sMed = calcMedian(speedSamples);
+                    var sAvg = calcAvg(speedSamples);
+                    var sMax = calcMax(speedSamples);
+                    wrapSpeed.innerHTML =
+                        '<div class="stats-metric-col"><span class="stats-metric-k">Min</span><span class="stats-metric-v">' + fmtSpeedMBs(sMin) + '</span></div>' +
+                        '<div class="stats-metric-col"><span class="stats-metric-k">Med</span><span class="stats-metric-v">' + fmtSpeedMBs(sMed) + '</span></div>' +
+                        '<div class="stats-metric-col"><span class="stats-metric-k">Avg</span><span class="stats-metric-v">' + fmtSpeedMBs(sAvg) + '</span></div>' +
+                        '<div class="stats-metric-col"><span class="stats-metric-k">Max</span><span class="stats-metric-v">' + fmtSpeedMBs(sMax) + '</span></div>';
+                    rowSpeed.style.display = 'flex';
+                } else if (rowSpeed) {
+                    rowSpeed.style.display = 'none';
+                }
+
+                // 6. Ping breakdown (min / med / avg / max)
+                var rowPing = document.getElementById('statsPingBreakdownRow');
+                var wrapPing = document.getElementById('statsPingValsWrap');
+                var pings = pingSamples.slice();
+                if (pings.length === 0 && state.lastPing !== null) {
+                    pings.push(state.lastPing);
+                }
+
+                if (pings.length >= 3 && rowPing && wrapPing) {
+                    var pMin = calcMin(pings);
+                    var pMed = calcMedian(pings);
+                    var pAvg = calcAvg(pings);
+                    var pMax = calcMax(pings);
+                    wrapPing.innerHTML =
+                        '<div class="stats-metric-col"><span class="stats-metric-k">Min</span><span class="stats-metric-v">' + Math.round(pMin) + ' ms</span></div>' +
+                        '<div class="stats-metric-col"><span class="stats-metric-k">Med</span><span class="stats-metric-v">' + Math.round(pMed) + ' ms</span></div>' +
+                        '<div class="stats-metric-col"><span class="stats-metric-k">Avg</span><span class="stats-metric-v">' + Math.round(pAvg) + ' ms</span></div>' +
+                        '<div class="stats-metric-col"><span class="stats-metric-k">Max</span><span class="stats-metric-v">' + Math.round(pMax) + ' ms</span></div>';
+                    wrapPing.style.gridTemplateColumns = 'repeat(4, 1fr)';
+                    rowPing.style.display = 'flex';
+                } else if (pings.length > 0 && rowPing && wrapPing) {
+                    var pSingleAvg = calcAvg(pings);
+                    wrapPing.innerHTML = '<div class="stats-metric-col" style="grid-column: 1 / -1;"><span class="stats-metric-k">Avg</span><span class="stats-metric-v">' + Math.round(pSingleAvg) + ' ms</span></div>';
+                    wrapPing.style.gridTemplateColumns = '1fr';
+                    rowPing.style.display = 'flex';
+                } else if (rowPing) {
+                    rowPing.style.display = 'none';
+                }
+
+                // 7. Show card with liquid glass animation
+                card.style.display = 'flex';
+                card.classList.remove('leaving');
+                card.classList.remove('entering');
+                void card.offsetWidth;
+                card.classList.add('entering');
+
+                // 8. 20s auto-dismiss progress bar animation
+                var timerFill = document.getElementById('statsTimerFill');
+                if (timerFill) {
+                    timerFill.style.transition = 'none';
+                    timerFill.style.width = '100%';
+                    void timerFill.offsetWidth;
+                    timerFill.style.transition = 'width 20s linear';
+                    timerFill.style.width = '0%';
+                }
+
+                // 9. Auto-dismiss after 20 seconds
+                clearTimeout(autoHideTimer);
+                autoHideTimer = setTimeout(function() {
+                    dismiss();
+                }, 20000);
+            }
+
+            function dismiss() {
+                clearTimeout(autoHideTimer);
+                var card = els.uploadStatsCard || document.getElementById('uploadStatsCard');
+                if (!card || card.style.display === 'none') return;
+                card.classList.remove('entering');
+                card.classList.add('leaving');
+                clearTimeout(leavingTimer);
+                leavingTimer = setTimeout(function() {
+                    card.style.display = 'none';
+                    card.classList.remove('leaving');
+                }, 380);
             }
 
             function hide() {
-                clearTimeout(rotateTimer);
-                clearTimeout(hideTimer);
-                clearTypeTimer();
                 active = false;
-                if (els.funfactBox) els.funfactBox.classList.remove('show');
-                if (els.funfactText) { els.funfactText.textContent = ''; els.funfactText.classList.remove('typing'); }
+                clearInterval(pingInterval);
+                clearTimeout(autoHideTimer);
+                clearTimeout(leavingTimer);
+                var card = els.uploadStatsCard || document.getElementById('uploadStatsCard');
+                if (card) {
+                    card.style.display = 'none';
+                    card.classList.remove('entering', 'leaving');
+                }
             }
 
-            return { start: start, feedSpeed: feedSpeed, feedElapsed: feedElapsed, feedEta: feedEta, finish: finish, hide: hide };
+            // Close button click listener
+            document.addEventListener('DOMContentLoaded', function() {
+                var btn = els.uploadStatsCloseBtn || document.getElementById('uploadStatsCloseBtn');
+                if (btn) {
+                    btn.addEventListener('click', function(e) {
+                        e.stopPropagation();
+                        dismiss();
+                    });
+                }
+            });
+            setTimeout(function() {
+                var btn = els.uploadStatsCloseBtn || document.getElementById('uploadStatsCloseBtn');
+                if (btn) {
+                    btn.addEventListener('click', function(e) {
+                        e.stopPropagation();
+                        dismiss();
+                    });
+                }
+            }, 0);
+
+            return {
+                start: start,
+                feedSpeed: feedSpeed,
+                finish: finish,
+                hide: hide,
+                dismiss: dismiss
+            };
         })();
 
         // ============================================================
@@ -2436,8 +2823,7 @@
         // ============================================================
         // CHUNK CONFIGURATION CARD
         // ============================================================
-        // Small standalone "typing" message helper — mirrors FunfactEngine's
-        // char-by-char reveal, but for the chunk-config warning/caution/
+        // Small standalone "typing" message helper for the chunk-config warning/caution/
         // prevented messages, which need their own independent box + timing.
         var chunkMsgTypeTimer = null;
         function chunkMsgSet(kind, text) {
@@ -4343,7 +4729,7 @@
             els.perFileProgress.innerHTML = '';
             state.uploadStartTime = null;
             updateTitleStatic();
-            FunfactEngine.hide();
+            UploadStatsEngine.hide();
         }
 
         // ============================================================
@@ -4384,8 +4770,8 @@
             els.uploadBtn.disabled = true;
             showUploadLiveControls();
             els.progSection.style.display = 'flex';
-            var funfactUploadStartT = Date.now();
-            FunfactEngine.start();
+            var uploadSessionStartT = Date.now();
+            UploadStatsEngine.start();
 
             // Per-file progress bars (for multi-file)
             if (isMulti) {
@@ -4442,7 +4828,7 @@
                     hideUploadLiveControls();
                     els.progSection.style.display = 'none';
                     resetSpeedVisuals();
-                    FunfactEngine.hide();
+                    UploadStatsEngine.hide();
                     return showError(e.message);
                 }
             }
@@ -4537,9 +4923,9 @@
             updateTitleStatic();
             var hadSuccess = results.some(function(r) { return !r.error; });
             if (hadSuccess) {
-                FunfactEngine.finish((Date.now() - funfactUploadStartT) / 1000);
+                UploadStatsEngine.finish(totalBytesAll, (Date.now() - uploadSessionStartT) / 1000);
             } else {
-                FunfactEngine.hide();
+                UploadStatsEngine.hide();
             }
             if (uploadControl.killed) renderRecentSection();
             selectedFiles = [];
@@ -4619,9 +5005,7 @@
                         var etaStr = 'ETA: ' + eta;
                         els.progEta.textContent = fmtSpeedMBs(speedMB) + ' • ' + etaStr;
                         updateSpeedVisuals(speedMB);
-                        FunfactEngine.feedSpeed(speedMB);
-                        FunfactEngine.feedElapsed(elapsed);
-                        FunfactEngine.feedEta(remaining);
+                        UploadStatsEngine.feedSpeed(speedMB);
 
                         // AVG starts sampling 2s into the upload so the first,
                         // noisy instant-speed readings don't skew it.
@@ -4869,13 +5253,7 @@
                     etaStr = isFinite(remaining) && remaining > 0 ? fmtTime(remaining) : '--';
                     els.progEta.textContent = fmtSpeedMBs(speedMB) + ' • ETA: ' + etaStr;
                     updateSpeedVisuals(speedMB);
-                    FunfactEngine.feedSpeed(speedMB);
-                    // Use the same base as the TE display (startTime), not the
-                    // session-only effectiveElapsed — the latter resets on every
-                    // reconnect/resume and made the funfact "elapsed" value look
-                    // random compared to the TE shown on screen.
-                    FunfactEngine.feedElapsed(elapsed);
-                    FunfactEngine.feedEta(remaining);
+                    UploadStatsEngine.feedSpeed(speedMB);
 
                     // AVG starts sampling 2s into this upload session so the
                     // first, noisy instant-speed readings don't skew it.
@@ -6301,8 +6679,7 @@
 
         // Shared progress-text updater for both protected-share upload
         // paths (direct + chunked) — mirrors uploadAll()'s size/speed/ETA
-        // logic (fmtBytes/fmtTime/fmtSpeedMBs), just without the funfact/
-        // averaging extras that flow only needs.
+        // logic (fmtBytes/fmtTime/fmtSpeedMBs).
         //
         // BUGFIX (2026-08): uploadProtectedShareDirect/Chunked previously
         // only updated els.progFill/els.progPct (the percentage) and never
@@ -6340,6 +6717,7 @@
                 var speedB = loaded / elapsed;
                 var speedMB = speedB / (1024 * 1024);
                 protLastKnownSpeedMB = speedMB;
+                UploadStatsEngine.feedSpeed(speedMB);
                 var remaining = (total - loaded) / speedB;
                 var etaStr = 'ETA: ' + (isFinite(remaining) ? fmtTime(remaining) : '--');
                 els.progEta.textContent = fmtSpeedMBs(speedMB) + ' • ' + etaStr;
@@ -6378,6 +6756,7 @@
             els.uploadBtn.textContent = 'Uploading…';
             els.progSection.style.display = 'flex';
             els.progStatus.textContent = 'Uploading ' + files.length + ' file' + (files.length === 1 ? '' : 's') + '…';
+            UploadStatsEngine.start();
 
             var totalBytes = files.reduce(function (sum, f) { return sum + f.size; }, 0);
 
@@ -6387,8 +6766,10 @@
                     : await uploadProtectedShareDirect(files, pairingEnabled);
 
                 renderProtectedShareResult(data, files, pairingEnabled);
+                UploadStatsEngine.finish(totalBytes);
             } catch (e) {
                 els.progSection.style.display = 'none';
+                UploadStatsEngine.hide();
                 showError(e.message || 'Upload failed');
             } finally {
                 els.uploadBtn.disabled = false;

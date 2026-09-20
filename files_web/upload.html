@@ -931,7 +931,7 @@
         .stats-metric-col {
             display: flex;
             flex-direction: column;
-            align-items: flex-start;
+            align-items: center;
             gap: 2px;
             padding: 5px 8px;
             background: rgba(255, 255, 255, 0.035);
@@ -948,6 +948,7 @@
             letter-spacing: 0.07em;
             font-weight: 700;
             color: var(--text-secondary);
+            text-align: center;
         }
         .stats-metric-v {
             font-size: 0.74rem;
@@ -959,6 +960,17 @@
             overflow: hidden;
             text-overflow: ellipsis;
             width: 100%;
+            text-align: center;
+        }
+        .stats-metric-v-unit {
+            display: block;
+            font-size: 0.58rem;
+            font-weight: 700;
+            color: var(--text-secondary);
+            letter-spacing: 0.02em;
+            margin-top: 1px;
+            white-space: nowrap;
+            text-align: center;
         }
         .stats-timer-bar {
             position: absolute;
@@ -2211,6 +2223,14 @@
             return mbps.toFixed(1) + ' Mbps';
         }
 
+        // Same as fmtSpeedMBs but returns { value, unit } separately, so the
+        // unit can be placed on its own line instead of getting clipped by
+        // text-overflow: ellipsis in the narrow min/med/avg/max tiles.
+        function fmtSpeedMBsParts(speedMB) {
+            if (speedMB < 1) return { value: (speedMB * 1024).toFixed(0), unit: 'KB/s' };
+            return { value: speedMB.toFixed(1), unit: 'MB/s' };
+        }
+
         // Truncate "really_long_filename_thing.mp4" -> "really_long_fil....mp4"
         // Keeps the start of the name + extension visible, full name goes in title (hover).
         function truncateFilename(name, maxLen) {
@@ -2623,11 +2643,15 @@
                     var sMed = calcMedian(speedSamples);
                     var sAvg = calcAvg(speedSamples);
                     var sMax = calcMax(speedSamples);
+                    function speedTile(label, speedMB) {
+                        var parts = fmtSpeedMBsParts(speedMB);
+                        return '<div class="stats-metric-col"><span class="stats-metric-k">' + label + '</span><span class="stats-metric-v">' + parts.value + '<span class="stats-metric-v-unit">' + parts.unit + '</span></span></div>';
+                    }
                     wrapSpeed.innerHTML =
-                        '<div class="stats-metric-col"><span class="stats-metric-k">Min</span><span class="stats-metric-v">' + fmtSpeedMBs(sMin) + '</span></div>' +
-                        '<div class="stats-metric-col"><span class="stats-metric-k">Med</span><span class="stats-metric-v">' + fmtSpeedMBs(sMed) + '</span></div>' +
-                        '<div class="stats-metric-col"><span class="stats-metric-k">Avg</span><span class="stats-metric-v">' + fmtSpeedMBs(sAvg) + '</span></div>' +
-                        '<div class="stats-metric-col"><span class="stats-metric-k">Max</span><span class="stats-metric-v">' + fmtSpeedMBs(sMax) + '</span></div>';
+                        speedTile('Min', sMin) +
+                        speedTile('Med', sMed) +
+                        speedTile('Avg', sAvg) +
+                        speedTile('Max', sMax);
                     rowSpeed.style.display = 'flex';
                 } else if (rowSpeed) {
                     rowSpeed.style.display = 'none';

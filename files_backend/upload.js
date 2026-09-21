@@ -1849,7 +1849,12 @@ router.post('/upload/init', rateLimit({ windowMs: 60 * 1000, max: 20, keyPrefix:
         filename,
         fileSize: parseInt(fileSize) || 0,
             mimeType,
-            totalChunks: parseInt(totalChunks),
+            // Fixed-size uploads know their chunk count upfront. Auto/dynamic
+            // uploads pick each chunk's size live as they go, so the total
+            // isn't known until the chunk flagged isLastChunk actually lands
+            // (see /upload/chunk below) — totalChunks stays null until then,
+            // and /upload/complete refuses to assemble before it's set.
+            totalChunks: totalChunks ? parseInt(totalChunks) : null,
             uploadMode: uploadMode || 'fast',
             receivedChunks: [],
             createdAt: Date.now(),
@@ -1872,7 +1877,7 @@ router.post('/upload/init', rateLimit({ windowMs: 60 * 1000, max: 20, keyPrefix:
         ownerTier: auth.tier
     });
 
-    console.log(`🚀 [CHUNKED UPLOAD INIT] ${filename} (${totalChunks} chunks, mode: ${uploadMode || 'fast'}, expires: ${expMinutes}min) - ID: ${uploadId}`);
+    console.log(`🚀 [CHUNKED UPLOAD INIT] ${filename} (${totalChunks || 'dynamic'} chunks, mode: ${uploadMode || 'fast'}, expires: ${expMinutes}min) - ID: ${uploadId}`);
 
     res.json({
         uploadId,
@@ -1884,7 +1889,7 @@ router.post('/upload/init', rateLimit({ windowMs: 60 * 1000, max: 20, keyPrefix:
 // ─── POST /api/upload/chunk ──────────────────────────────────────────────────
 
 router.post('/upload/chunk', rateLimit({ windowMs: 60 * 1000, max: 300, keyPrefix: 'chunk:' }), chunkUpload.single('chunk'), async (req, res) => {
-    const { uploadId, chunkIndex } = req.body;
+    const { uploadId, chunkIndex, isLastChunk } = req.body;
 
     // SECURITY: this endpoint previously accepted chunk data with NO auth check
     // at all — anyone who obtained (or guessed) an uploadId could write arbitrary
@@ -1933,7 +1938,7 @@ router.post('/upload/chunk', rateLimit({ windowMs: 60 * 1000, max: 300, keyPrefi
                 return { error: 'Invalid upload ID or upload expired', status: 400 };
             }
 
-            if (index < 0 || index >= manifest.totalChunks) {
+            if (index < 0 || (manifest.totalChunks !== null && index >= manifest.totalChunks)) {
                 return { error: `Invalid chunk index: ${index}`, status: 400 };
             }
 
@@ -1952,6 +1957,15 @@ router.post('/upload/chunk', rateLimit({ windowMs: 60 * 1000, max: 300, keyPrefi
             manifest.receivedChunks.push(index);
             manifest.receivedChunks.sort((a, b) => a - b);
             manifest.lastChunkTime = Date.now();
+
+            // Dynamic/auto uploads don't know their total chunk count at
+            // /init time — each chunk's size is picked live as it's sent, so
+            // the client flags whichever chunk actually reaches the end of
+            // the file. That's the only point the total becomes knowable.
+            if (isLastChunk === true || isLastChunk === 'true') {
+                manifest.totalChunks = index + 1;
+            }
+
             writeManifest(uploadId, manifest);
 
             console.log(`📦 [CHUNK RECEIVED] ${uploadId} - chunk ${index}/${manifest.totalChunks}`);
@@ -2002,6 +2016,10 @@ router.post('/upload/complete', async (req, res) => {
 
     if (manifest.ownerKey && manifest.ownerKey !== auth.ownerKey) {
         return res.status(403).json({ error: 'This upload session belongs to a different session' });
+    }
+
+    if (manifest.totalChunks === null) {
+        return res.status(400).json({ error: 'Upload not finished — final chunk not yet confirmed by the server' });
     }
 
     if (manifest.receivedChunks.length !== manifest.totalChunks) {

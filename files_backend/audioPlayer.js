@@ -64,8 +64,207 @@ const ICONS = {
     back: `<svg viewBox="0 0 24 24" fill="none"><path d="M15 4.5 7.5 12l7.5 7.5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>`,
     volume: `<svg viewBox="0 0 24 24" fill="none"><path d="M4 9.5v5h3.6l5 4V5.5l-5 4H4Z" fill="currentColor"/><path d="M16.2 8.8a5 5 0 0 1 0 6.4M19 6.3a9 9 0 0 1 0 11.4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" fill="none"/></svg>`,
     mute: `<svg viewBox="0 0 24 24" fill="none"><path d="M4 9.5v5h3.6l5 4V5.5l-5 4H4Z" fill="currentColor"/><path d="M15.5 10 19.5 14M19.5 10 15.5 14" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>`,
+    speed: `<svg viewBox="0 0 24 24" fill="none"><path d="M4.2 17a8.5 8.5 0 1 1 15.6 0" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M12 13.6 15.8 9" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/><circle cx="12" cy="13.6" r="1.6" fill="currentColor"/></svg>`,
     disc: `<svg viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="8.5" stroke="currentColor" stroke-width="1.8"/><circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="1.8"/><circle cx="12" cy="12" r="1" fill="currentColor"/></svg>`,
 };
+
+// ─── Shared player snippets ─────────────────────────────────────────────────
+// The normal and the TVFS-Users-Only player are two separate page templates,
+// but title marquee + speed control are identical in both, so they live here
+// once and get interpolated into each template.
+
+// Title marquee: rest at the start, glide to the end, rest, glide back.
+// The edge fades are animated through registered custom properties so a
+// fade only exists on the side where text is actually clipped -- the first
+// and last letters are never dimmed while the title is resting.
+const MARQUEE_CSS = `
+@property --mq-fade-l{syntax:'<length>'; inherits:false; initial-value:0px;}
+@property --mq-fade-r{syntax:'<length>'; inherits:false; initial-value:0px;}
+.title{width:100%; overflow:hidden; font-family:var(--track-font); font-weight:700; font-size:1.15rem; text-align:center;}
+.title .mq-inner{display:inline-block; white-space:nowrap;}
+.title.marquee{
+  text-align:left; --mq-fade-l:0px; --mq-fade-r:20px;
+  -webkit-mask-image:linear-gradient(to right,transparent 0px,#000 var(--mq-fade-l),#000 calc(100% - var(--mq-fade-r)),transparent 100%);
+  mask-image:linear-gradient(to right,transparent 0px,#000 var(--mq-fade-l),#000 calc(100% - var(--mq-fade-r)),transparent 100%);
+}
+.title.marquee .mq-inner{padding:0 6px; will-change:transform;} /* 6px per side = MQ_PAD/2 in the script */
+.title.clamped .mq-inner{display:block; overflow:hidden; text-overflow:ellipsis;}`;
+
+const MARQUEE_JS = `
+// ─── Title marquee ──────────────────────────────────────────────────────
+var MQ_PAD = 12;            // total horizontal padding of .mq-inner while scrolling
+var MQ_HOLD_START = 2000;   // ms the title rests at the start (readable before it moves)
+var MQ_HOLD_END = 1800;     // ms it rests once the end is reached
+var MQ_SPEED = 30;          // px per second while gliding forward
+var MQ_FADE = '20px';
+var mqAnims = [];
+var mqKey = '';
+var mqRaf = 0;
+var mqReduce = window.matchMedia ? window.matchMedia('(prefers-reduced-motion: reduce)') : null;
+
+function stopTitleMarquee(titleEl){
+  mqAnims.forEach(function(a){ try { a.cancel(); } catch (e) {} });
+  mqAnims = [];
+  mqKey = '';
+  titleEl.classList.remove('marquee');
+  titleEl.classList.remove('clamped');
+}
+
+function setupTitleMarquee(){
+  cancelAnimationFrame(mqRaf);
+  mqRaf = requestAnimationFrame(function(){
+    var titleEl = document.getElementById('title');
+    var inner = document.getElementById('titleInner');
+    var active = titleEl.classList.contains('marquee');
+    var natural = inner.offsetWidth - (active ? MQ_PAD : 0);
+    var box = titleEl.clientWidth;
+    var key = natural + '|' + box;
+    if (active && key === mqKey && mqAnims.length) return; // nothing changed -> don't restart mid-scroll
+
+    stopTitleMarquee(titleEl);
+    if (natural - box <= 4) return;                         // fits, stays centred
+    if (mqReduce && mqReduce.matches){ titleEl.classList.add('clamped'); return; }
+
+    var dist = natural + MQ_PAD - box;
+    var tScroll = Math.min(24000, Math.max(3500, dist / MQ_SPEED * 1000));
+    var tBack = Math.min(4500, Math.max(1100, tScroll * 0.4));
+    var total = MQ_HOLD_START + tScroll + MQ_HOLD_END + tBack;
+    var a = MQ_HOLD_START / total;                          // scroll starts
+    var b = (MQ_HOLD_START + tScroll) / total;              // end reached
+    var c = (MQ_HOLD_START + tScroll + MQ_HOLD_END) / total; // glide back starts
+    var e = Math.min(500, tScroll / 3, tBack / 3) / total;  // fade ramp length
+
+    titleEl.classList.add('marquee');
+    mqKey = key;
+    var opts = { duration: total, iterations: Infinity };
+    try {
+      mqAnims.push(inner.animate([
+        { transform: 'translateX(0px)', offset: 0 },
+        { transform: 'translateX(0px)', offset: a, easing: 'cubic-bezier(.45,.05,.2,1)' },
+        { transform: 'translateX(' + (-dist) + 'px)', offset: b },
+        { transform: 'translateX(' + (-dist) + 'px)', offset: c, easing: 'cubic-bezier(.5,0,.2,1)' },
+        { transform: 'translateX(0px)', offset: 1 }
+      ], opts));
+      // Left fade only while text is scrolled away from the start,
+      // right fade only while there is still text to the right.
+      mqAnims.push(titleEl.animate([
+        { '--mq-fade-l': '0px', '--mq-fade-r': MQ_FADE, offset: 0 },
+        { '--mq-fade-l': '0px', offset: a },
+        { '--mq-fade-l': MQ_FADE, offset: a + e },
+        { '--mq-fade-r': MQ_FADE, offset: b - e },
+        { '--mq-fade-r': '0px', offset: b },
+        { '--mq-fade-r': '0px', offset: c },
+        { '--mq-fade-r': MQ_FADE, offset: c + e },
+        { '--mq-fade-l': MQ_FADE, offset: 1 - e },
+        { '--mq-fade-l': '0px', '--mq-fade-r': MQ_FADE, offset: 1 }
+      ], opts));
+    } catch (err) {
+      // No Web Animations support: static title with both edges softened.
+      titleEl.style.setProperty('--mq-fade-l', '14px');
+      titleEl.style.setProperty('--mq-fade-r', '14px');
+    }
+  });
+}
+window.addEventListener('resize', setupTitleMarquee);
+window.addEventListener('load', setupTitleMarquee);
+// The title font is a web font picked from the BPM ladder. Measuring before it
+// has loaded gives the wrong overflow, so re-measure once fonts are in.
+if (document.fonts){
+  if (document.fonts.ready) document.fonts.ready.then(setupTitleMarquee);
+  if (document.fonts.addEventListener) document.fonts.addEventListener('loadingdone', setupTitleMarquee);
+}
+setupTitleMarquee();
+`;
+
+// Playback speed: 0.5x..2x on a log scale so 1.00x sits exactly in the middle.
+const SPEED_CSS = `
+.speedwrap{width:100%; display:flex; align-items:center; gap:10px; margin-top:-8px;}
+.speed-btn{
+  flex:0 0 auto; width:30px; height:30px; border-radius:50%; background:var(--glass); border:1px solid var(--border);
+  color:var(--muted); display:flex; align-items:center; justify-content:center; cursor:pointer; transition:all .15s;
+}
+.speed-btn svg{width:15px; height:15px;}
+.speed-btn:hover,.speed-btn.is-changed{color:var(--accent); border-color:var(--accent);}
+.speed-slider{
+  -webkit-appearance:none; appearance:none; flex:1; height:6px; border-radius:99px; cursor:pointer; outline:none;
+  background:linear-gradient(90deg, rgba(255,255,255,.12) 0%, rgba(255,255,255,.12) var(--s-lo,50%), var(--accent) var(--s-lo,50%), var(--accent) var(--s-hi,50%), rgba(255,255,255,.12) var(--s-hi,50%));
+}
+.speed-slider::-webkit-slider-thumb{-webkit-appearance:none; width:14px; height:14px; border-radius:50%; background:#fff; box-shadow:0 0 0 4px rgba(47,255,196,.25); cursor:grab;}
+.speed-slider::-moz-range-thumb{width:14px; height:14px; border-radius:50%; background:#fff; border:none; box-shadow:0 0 0 4px rgba(47,255,196,.25); cursor:grab;}
+.speed-pct{flex:0 0 auto; width:44px; text-align:right; font-size:.68rem; color:var(--muted); font-family:'JetBrains Mono',monospace;}
+.speed-pct.is-changed{color:var(--accent);}
+.pitch-chk{flex:0 0 auto; position:relative; width:16px; height:16px; cursor:pointer; display:block;}
+.pitch-chk input{position:absolute; inset:0; width:100%; height:100%; margin:0; opacity:0; cursor:pointer;}
+.pitch-chk span{
+  position:absolute; inset:0; border-radius:5px; background:var(--glass); border:1px solid var(--border);
+  transition:all .15s; pointer-events:none;
+}
+.pitch-chk span::after{
+  content:''; position:absolute; left:4.5px; top:1.5px; width:4px; height:8px; border:solid #06110e; border-width:0 2px 2px 0;
+  transform:rotate(45deg) scale(0); transition:transform .12s;
+}
+.pitch-chk:hover span{border-color:var(--accent);}
+.pitch-chk input:checked + span{background:var(--accent); border-color:var(--accent);}
+.pitch-chk input:checked + span::after{transform:rotate(45deg) scale(1);}
+.pitch-chk input:focus-visible + span{box-shadow:0 0 0 3px rgba(47,255,196,.3);}`;
+
+const SPEED_HTML = `
+    <div class="speedwrap">
+      <button class="speed-btn" id="btnSpeedReset" title="Playback speed (click to reset to 1x)">${ICONS.speed}</button>
+      <input type="range" class="speed-slider" id="speed" min="-100" max="100" step="1" value="0" title="Playback speed">
+      <span class="speed-pct" id="speedPct">1.00\u00d7</span>
+      <label class="pitch-chk" title="Pitch follows speed (nightcore / slowed) \u2013 off = speed only"><input type="checkbox" id="pitchLink"><span></span></label>
+    </div>`;
+
+const SPEED_JS = `
+// ─── Playback speed ─────────────────────────────────────────────────────
+// Slider position is log2(rate)*100, so -100..100 maps to 0.5x..2x with
+// 1.00x dead centre. Pitch is preserved by default (native time-stretch); the checkbox next to the slider lets it follow speed instead. defaultPlaybackRate
+// is set too: the media element resets playbackRate to it whenever a new src
+// loads, which is exactly what the protected player does after login.
+var speedEl = document.getElementById('speed');
+var speedPct = document.getElementById('speedPct');
+var btnSpeedReset = document.getElementById('btnSpeedReset');
+var currentSpeed = 1;
+var pitchLink = document.getElementById('pitchLink');
+// Unchecked = pitch preserved (speed only). Checked = pitch follows speed
+// (nightcore when faster, slowed/chopped-and-screwed when slower).
+function applyPitchMode(){
+  var keep = !pitchLink.checked;
+  audio.preservesPitch = keep;
+  audio.webkitPreservesPitch = keep;
+  audio.mozPreservesPitch = keep;
+}
+applyPitchMode();
+pitchLink.addEventListener('change', applyPitchMode);
+// Some browsers re-apply the default when a new src loads, so set it again.
+audio.addEventListener('loadedmetadata', applyPitchMode);
+
+function applySpeed(rate){
+  currentSpeed = Math.max(0.5, Math.min(2, rate));
+  audio.defaultPlaybackRate = currentSpeed;
+  audio.playbackRate = currentSpeed;
+  var pos = Math.round(Math.log(currentSpeed) / Math.LN2 * 100);
+  var pct = (pos + 100) / 2;
+  speedEl.value = pos;
+  speedEl.style.setProperty('--s-lo', Math.min(50, pct) + '%');
+  speedEl.style.setProperty('--s-hi', Math.max(50, pct) + '%');
+  speedPct.textContent = currentSpeed.toFixed(2) + '\u00d7';
+  var changed = Math.abs(currentSpeed - 1) > 0.004;
+  speedPct.classList.toggle('is-changed', changed);
+  btnSpeedReset.classList.toggle('is-changed', changed);
+  // Beat cadence scales with speed, so the visualizer's ring cooldown does too.
+  if (typeof beatCooldownMs === 'function' && bpmHint) spawnCooldownMs = beatCooldownMs();
+}
+applySpeed(1);
+
+speedEl.addEventListener('input', function(){
+  var v = Number(speedEl.value);
+  if (Math.abs(v) <= 4) v = 0;                                // magnetic 1.00x
+  applySpeed(Math.round(Math.pow(2, v / 100) * 100) / 100);   // 0.01x steps
+});
+btnSpeedReset.addEventListener('click', function(){ applySpeed(1); });
+`;
 
 // 8 bands for the Fruity-EQ-2-style peaking EQ, roughly log-spaced.
 const EQ_BANDS_HZ = [60, 150, 400, 1000, 2500, 6000, 10000, 16000];
@@ -149,11 +348,7 @@ body{
 .disc.spinning{animation:spin 6s linear infinite;}
 @keyframes spin{to{transform:rotate(360deg);}}
 
-.title{width:100%; overflow:hidden; font-family:var(--track-font); font-weight:700; font-size:1.15rem; text-align:center;}
-.title .mq-inner{display:inline-block; white-space:nowrap;}
-.title.marquee{-webkit-mask-image:linear-gradient(to right,transparent,black 4%,black 96%,transparent); mask-image:linear-gradient(to right,transparent,black 4%,black 96%,transparent); text-align:left;}
-.title.marquee .mq-inner{animation:mq-scroll var(--mq-duration,14s) ease-in-out infinite;}
-@keyframes mq-scroll{0%,6%{transform:translateX(0);}50%,56%{transform:translateX(calc(-1 * var(--mq-distance,0px)));}94%,100%{transform:translateX(0);}}
+${MARQUEE_CSS}
 
 .seekwrap{width:100%; display:flex; flex-direction:column; gap:6px;}
 .seek{
@@ -209,6 +404,7 @@ body{
 .vis-toggle svg{width:15px; height:15px;}
 .vis-toggle:hover{color:var(--accent); border-color:var(--accent);}
 .vis-toggle.is-off{color:var(--muted); border-color:var(--border); opacity:.45;}
+${SPEED_CSS}
 
 .meta{margin-top:2px; font-size:.66rem; color:var(--muted); font-family:'JetBrains Mono',monospace; text-align:center; letter-spacing:.01em; word-break:break-word;}
 
@@ -285,6 +481,7 @@ body{
       <input type="range" class="vol-slider" id="vol" min="0" max="200" value="100">
       <span class="vol-pct" id="volPct">100%</span>
     </div>
+${SPEED_HTML}
 
     <div class="meta">${escapeHtml(metaBits)}</div>
   </div>
@@ -328,23 +525,7 @@ btnDownload.href = AUDIO_URL;
 var ICON_PLAY = ${safeScriptJson(ICONS.play)};
 var ICON_PAUSE = ${safeScriptJson(ICONS.pause)};
 
-function setupTitleMarquee(){
-  var titleEl = document.getElementById('title');
-  var inner = document.getElementById('titleInner');
-  requestAnimationFrame(function(){
-    var overflow = inner.scrollWidth - titleEl.clientWidth;
-    if (overflow > 4){
-      titleEl.classList.add('marquee');
-      titleEl.style.setProperty('--mq-distance', overflow + 'px');
-      titleEl.style.setProperty('--mq-duration', Math.max(6, overflow / 22) + 's');
-    } else {
-      titleEl.classList.remove('marquee');
-    }
-  });
-}
-setupTitleMarquee();
-window.addEventListener('resize', setupTitleMarquee);
-
+${MARQUEE_JS}
 
 function fmt(s){
   if(!isFinite(s) || s<0) s=0;
@@ -477,6 +658,7 @@ btnMute.addEventListener('click', function(){
   }
 });
 
+${SPEED_JS}
 // ─── Visualizer on/off toggle ──────────────────────────────────────────
 var btnVis = document.getElementById('btnVis');
 var visualizerOn = true;
@@ -785,7 +967,9 @@ var fluxAvg = 0.015;
 var bpmHint = TRACK_BPM || 110;
 // Faster BPM tracks => quicker beat cadence => rings must be allowed to
 // spawn more often, and travel a bit faster to match the felt tempo.
-var spawnCooldownMs = Math.max(140, 60000 / bpmHint * 0.65);
+// Playback speed scales the felt tempo as well (see applySpeed).
+function beatCooldownMs(){ return Math.max(140, 60000 / bpmHint * 0.65 / currentSpeed); }
+var spawnCooldownMs = beatCooldownMs();
 var lastSpawn = 0;
 var huePhase = Math.random()*360;
 
@@ -948,11 +1132,7 @@ body{
 .disc.spinning{animation:spin 6s linear infinite;}
 @keyframes spin{to{transform:rotate(360deg);}}
 
-.title{width:100%; overflow:hidden; font-family:var(--track-font); font-weight:700; font-size:1.15rem; text-align:center;}
-.title .mq-inner{display:inline-block; white-space:nowrap;}
-.title.marquee{-webkit-mask-image:linear-gradient(to right,transparent,black 4%,black 96%,transparent); mask-image:linear-gradient(to right,transparent,black 4%,black 96%,transparent); text-align:left;}
-.title.marquee .mq-inner{animation:mq-scroll var(--mq-duration,14s) ease-in-out infinite;}
-@keyframes mq-scroll{0%,6%{transform:translateX(0);}50%,56%{transform:translateX(calc(-1 * var(--mq-distance,0px)));}94%,100%{transform:translateX(0);}}
+${MARQUEE_CSS}
 
 .seekwrap{width:100%; display:flex; flex-direction:column; gap:6px;}
 .seek{
@@ -1008,6 +1188,7 @@ body{
 .vis-toggle svg{width:15px; height:15px;}
 .vis-toggle:hover{color:var(--accent); border-color:var(--accent);}
 .vis-toggle.is-off{color:var(--muted); border-color:var(--border); opacity:.45;}
+${SPEED_CSS}
 
 .meta{margin-top:2px; font-size:.66rem; color:var(--muted); font-family:'JetBrains Mono',monospace; text-align:center; letter-spacing:.01em; word-break:break-word;}
 
@@ -1108,6 +1289,7 @@ body{
       <input type="range" class="vol-slider" id="vol" min="0" max="200" value="100">
       <span class="vol-pct" id="volPct">100%</span>
     </div>
+${SPEED_HTML}
 
     <div class="meta">${escapeHtml(metaBits)}</div>
   </div>
@@ -1253,23 +1435,7 @@ silentCheck();
 var ICON_PLAY = ${safeScriptJson(ICONS.play)};
 var ICON_PAUSE = ${safeScriptJson(ICONS.pause)};
 
-function setupTitleMarquee(){
-  var titleEl = document.getElementById('title');
-  var inner = document.getElementById('titleInner');
-  requestAnimationFrame(function(){
-    var overflow = inner.scrollWidth - titleEl.clientWidth;
-    if (overflow > 4){
-      titleEl.classList.add('marquee');
-      titleEl.style.setProperty('--mq-distance', overflow + 'px');
-      titleEl.style.setProperty('--mq-duration', Math.max(6, overflow / 22) + 's');
-    } else {
-      titleEl.classList.remove('marquee');
-    }
-  });
-}
-setupTitleMarquee();
-window.addEventListener('resize', setupTitleMarquee);
-
+${MARQUEE_JS}
 
 function fmt(s){
   if(!isFinite(s) || s<0) s=0;
@@ -1402,6 +1568,7 @@ btnMute.addEventListener('click', function(){
   }
 });
 
+${SPEED_JS}
 // ─── Visualizer on/off toggle ──────────────────────────────────────────
 var btnVis = document.getElementById('btnVis');
 var visualizerOn = true;
@@ -1710,7 +1877,9 @@ var fluxAvg = 0.015;
 var bpmHint = TRACK_BPM || 110;
 // Faster BPM tracks => quicker beat cadence => rings must be allowed to
 // spawn more often, and travel a bit faster to match the felt tempo.
-var spawnCooldownMs = Math.max(140, 60000 / bpmHint * 0.65);
+// Playback speed scales the felt tempo as well (see applySpeed).
+function beatCooldownMs(){ return Math.max(140, 60000 / bpmHint * 0.65 / currentSpeed); }
+var spawnCooldownMs = beatCooldownMs();
 var lastSpawn = 0;
 var huePhase = Math.random()*360;
 

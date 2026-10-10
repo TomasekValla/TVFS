@@ -309,7 +309,7 @@ async function withManifestLock(uploadId, fn) {
 function writeManifest(uploadId, data) {
     const manifestPath = path.join(dirs.chunks, `${uploadId}_manifest.json`);
     const tmpPath = manifestPath + '.tmp';
-    fs.writeFileSync(tmpPath, JSON.stringify(data, null, 2));
+    fs.writeFileSync(tmpPath, JSON.stringify(data)); // compact: this is rewritten on EVERY chunk, pretty-printing a 10k+ entry receivedChunks array was pure overhead
     fs.renameSync(tmpPath, manifestPath);
 }
 
@@ -1888,7 +1888,13 @@ router.post('/upload/init', rateLimit({ windowMs: 60 * 1000, max: 20, keyPrefix:
 
 // ─── POST /api/upload/chunk ──────────────────────────────────────────────────
 
-router.post('/upload/chunk', rateLimit({ windowMs: 60 * 1000, max: 300, keyPrefix: 'chunk:' }), chunkUpload.single('chunk'), async (req, res) => {
+// 96 KB chunks x 8 connections on a flaky link easily means 10-30 req/s (and the
+// limiter is keyed on req.ip, which behind nginx + the Cloudflare tunnel can be
+// ONE shared address for every visitor). The old 300/min ceiling turned the
+// weak-connection mode into a 429 storm. Override with TVFS_CHUNK_RATE_MAX.
+const CHUNK_RATE_MAX_PER_MIN = parseInt(process.env.TVFS_CHUNK_RATE_MAX, 10) || 2400;
+
+router.post('/upload/chunk', rateLimit({ windowMs: 60 * 1000, max: CHUNK_RATE_MAX_PER_MIN, keyPrefix: 'chunk:' }), chunkUpload.single('chunk'), async (req, res) => {
     const { uploadId, chunkIndex, isLastChunk } = req.body;
 
     // SECURITY: this endpoint previously accepted chunk data with NO auth check
@@ -1926,11 +1932,28 @@ router.post('/upload/chunk', rateLimit({ windowMs: 60 * 1000, max: 300, keyPrefi
         return res.status(400).json({ error: 'Missing or invalid chunkIndex', received: chunkIndex });
     }
 
+    // Integrity: a connection that drops mid-body must never be stored as a
+    // "received" chunk. The client sends the exact byte length it intended to
+    // send; anything else (truncated multipart that still parsed) is rejected
+    // and simply gets retried. Optional field -> older cached clients still work.
+    const declaredSize = parseInt(req.body.chunkSize, 10);
+    if (!isNaN(declaredSize) && declaredSize !== req.file.size) {
+        try { fs.unlinkSync(req.file.path); } catch (e) {}
+        return res.status(400).json({ error: `Chunk size mismatch (got ${req.file.size}, expected ${declaredSize})` });
+    }
+
+    const tmpPath = req.file.path;
+    const dropTmp = () => { try { if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath); } catch (e) {} };
+
     try {
         const numberedChunkPath = path.join(dirs.chunks, `${uploadId}_chunk_${String(index).padStart(4, '0')}`);
 
-        fs.renameSync(req.file.path, numberedChunkPath);
-
+        // IMPORTANT: the temp file is only moved to its final numbered name
+        // INSIDE the lock, AFTER the duplicate check. It used to be renamed first,
+        // so a retry of an already-stored chunk (client timed out / dropped
+        // before seeing our 200) overwrote the good file and then the duplicate
+        // branch unlinked it - manifest said "received", file was gone, and
+        // /complete died with "Missing chunk file" and wiped the whole upload.
         const result = await withManifestLock(uploadId, async () => {
             const manifest = readManifest(uploadId);
 
@@ -1944,7 +1967,14 @@ router.post('/upload/chunk', rateLimit({ windowMs: 60 * 1000, max: 300, keyPrefi
 
             if (manifest.receivedChunks.includes(index)) {
                 console.log(`⚠️  [DUPLICATE CHUNK] ${uploadId} - chunk ${index} already received`);
-                try { fs.unlinkSync(numberedChunkPath); } catch (e) {}
+                if (fs.existsSync(numberedChunkPath)) {
+                    dropTmp(); // keep the stored chunk, discard only the retry's copy
+                } else {
+                    // Self-heal: manifest claims it, disk doesn't have it (left over
+                    // from the old bug, or a partial cleanup). Adopt the fresh copy.
+                    fs.renameSync(tmpPath, numberedChunkPath);
+                    console.log(`🩹 [CHUNK HEALED] ${uploadId} - chunk ${index} was missing on disk, restored from retry`);
+                }
                 return {
                     success: true,
                     chunkIndex: index,
@@ -1954,19 +1984,27 @@ router.post('/upload/chunk', rateLimit({ windowMs: 60 * 1000, max: 300, keyPrefi
                 };
             }
 
+            fs.renameSync(tmpPath, numberedChunkPath);
+
             manifest.receivedChunks.push(index);
             manifest.receivedChunks.sort((a, b) => a - b);
             manifest.lastChunkTime = Date.now();
 
             // Dynamic/auto uploads don't know their total chunk count at
-            // /init time — each chunk's size is picked live as it's sent, so
+            // /init time - each chunk's size is picked live as it's sent, so
             // the client flags whichever chunk actually reaches the end of
             // the file. That's the only point the total becomes knowable.
             if (isLastChunk === true || isLastChunk === 'true') {
                 manifest.totalChunks = index + 1;
             }
 
-            writeManifest(uploadId, manifest);
+            try {
+                writeManifest(uploadId, manifest);
+            } catch (e) {
+                // Don't leave an orphan the manifest doesn't know about.
+                try { fs.unlinkSync(numberedChunkPath); } catch (e2) {}
+                throw e;
+            }
 
             console.log(`📦 [CHUNK RECEIVED] ${uploadId} - chunk ${index}/${manifest.totalChunks}`);
 
@@ -1979,7 +2017,7 @@ router.post('/upload/chunk', rateLimit({ windowMs: 60 * 1000, max: 300, keyPrefi
         });
 
         if (result.error) {
-            if (fs.existsSync(numberedChunkPath)) try { fs.unlinkSync(numberedChunkPath); } catch (e) {}
+            dropTmp(); // never touch the numbered file here - it may be a valid stored chunk
             return res.status(result.status || 400).json({ error: result.error });
         }
 
@@ -1987,9 +2025,7 @@ router.post('/upload/chunk', rateLimit({ windowMs: 60 * 1000, max: 300, keyPrefi
 
     } catch (error) {
         console.error(`❌ [CHUNK ERROR] ${uploadId} chunk ${index}:`, error);
-        if (req.file && fs.existsSync(req.file.path)) {
-            try { fs.unlinkSync(req.file.path); } catch (e) {}
-        }
+        dropTmp();
         res.status(500).json({ error: 'Chunk processing failed', details: error.message });
     }
 });

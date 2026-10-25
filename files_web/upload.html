@@ -2481,6 +2481,11 @@
         // THIS tab are excluded — otherwise every in-progress upload would
         // immediately (and pointlessly) show itself as "unfinished".
         var activeResumeKeys = {};
+        // Server-side uploadIds this tab started. The server lists every
+        // unfinished manifest of the account in /api/status, including the
+        // one this tab is uploading (or assembling) right now — without this
+        // it would show up as "uploaded from another device".
+        var ownUploadIds = {};
 
         function getAllPendingResumes() {
             var out = [];
@@ -3985,7 +3990,7 @@
             // Skip any uploadId we already know locally so we don't show the
             // same paused upload twice from the device that actually owns it.
             var remoteUnfinished = (window.remotePendingUploads || [])
-                .filter(function(p) { return !localUploadIds[p.uploadId]; })
+                .filter(function(p) { return !localUploadIds[p.uploadId] && !ownUploadIds[p.uploadId]; })
                 .map(function(p) {
                     return {
                         kind: 'unfinished-remote',
@@ -5529,6 +5534,7 @@
             }
 
             uploadControl.uploadId = uploadId;
+            ownUploadIds[uploadId] = true;
             if (uploadControl.killed) throw new Error('Upload killed');
 
             var hadExistingResumeRecord = !!resumeData;
@@ -5969,6 +5975,8 @@
 
             if (hasError || failedChunks.size > 0) {
                 delete activeResumeKeys[thisResumeKey];
+                // Leftover chunks may now be resumable — let them show again
+                delete ownUploadIds[uploadId];
                 if (firstError === 'KILLED') {
                     clearResume(file); // remains were (or are being) wiped server-side too
                     throw new Error('Upload killed');

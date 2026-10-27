@@ -16,6 +16,7 @@ const userSync = require('./userSync');
 const thumbnails = require('./thumbnails');
 const requestLogger = require('./requestLogger');
 const audioPlayerLib = require('./audioPlayer');
+const safeFs = require('./safeFs');
 
 // ─── Session Store ───────────────────────────────────────────────────────────
 //
@@ -281,6 +282,12 @@ function saveRegistry() {
 function saveRegistrySync() {
     clearTimeout(registrySaveTimer);
     _writeRegistryAtomic();
+}
+
+// True if any registry entry other than `exceptEntry` still points at filePath.
+// Guards every unlink: entries created before the no-clobber fix may share a path.
+function isPathReferenced(filePath, exceptEntry = null) {
+    return registry.files.some(f => f !== exceptEntry && f.path === filePath);
 }
 
 // Load registry on startup
@@ -804,14 +811,14 @@ function maybeCreateTextReader(storedFilename, originalName, mimeType, expiresAt
     if (!isTxt) return null;
 
     const readerSlug = originalName.replace(/\.[^.]+$/, '').replace(/[^\w\-]/g, '_').replace(/_+/g, '_').slice(0, 40) || generateReaderId();
-    const readerFilename = `${readerSlug}_txt_tvfsreader.html`;
-    const readerPath = path.join(dirs.text, readerFilename);
     const txtUrl = `https://files.tomasekvalla.cz/files/download/${storedFilename}`;
-    const readerUrl = `https://files.tomasekvalla.cz/files/text/${readerFilename}`;
 
     try {
         const html = generateTextReaderHtml(txtUrl, originalName);
-        fs.writeFileSync(readerPath, html);
+        // Slug comes from the original name only, so same-named uploads collide: never overwrite
+        const { filename: readerFilename, filePath: readerPath } =
+            safeFs.writeFileUnique(dirs.text, `${readerSlug}_txt_tvfsreader.html`, html);
+        const readerUrl = `https://files.tomasekvalla.cz/files/text/${readerFilename}`;
         console.log(`📖 [TEXT READER] Created ${readerFilename} for ${storedFilename}`);
 
         // Register reader in registry with same expiry
@@ -1113,11 +1120,10 @@ function maybeCreateMdReader(storedFilename, originalName, mimeType, expiresAt) 
     const mdUrl = `https://files.tomasekvalla.cz/files/text/${storedFilename}`;
     try {
         const readerSlug = originalName.replace(/\.[^.]+$/, '').replace(/[^\w\-]/g, '_').replace(/_+/g, '_').slice(0, 40) || generateReaderId();
-        const readerFilename = `${readerSlug}_md_tvfsreader.html`;
-        const readerPath = path.join(dirs.text, readerFilename);
-        const readerUrl = `https://files.tomasekvalla.cz/files/text/${readerFilename}`;
         const html = generateMdReaderHtml(mdUrl, originalName);
-        fs.writeFileSync(readerPath, html);
+        const { filename: readerFilename, filePath: readerPath } =
+            safeFs.writeFileUnique(dirs.text, `${readerSlug}_md_tvfsreader.html`, html);
+        const readerUrl = `https://files.tomasekvalla.cz/files/text/${readerFilename}`;
         console.log(`📖 [MD READER] Created ${readerFilename} for ${storedFilename}`);
         const mdReadFileId = generateFileId();
         registry.files.push({
@@ -1774,7 +1780,11 @@ router.delete('/file/:id', async (req, res) => {
     try {
         if (file.path && fs.existsSync(file.path)) {
             sizeForLog = fs.statSync(file.path).size;
-            fs.unlinkSync(file.path);
+            if (isPathReferenced(file.path, file)) {
+                console.warn(`⚠️  [MANUAL DELETE] Skipping unlink of ${file.path}: still referenced by another registry entry`);
+            } else {
+                fs.unlinkSync(file.path);
+            }
         }
     } catch (e) {
         console.error(`⚠️  [MANUAL DELETE] Failed to unlink ${file.path}:`, e.message);
@@ -1783,11 +1793,15 @@ router.delete('/file/:id', async (req, res) => {
     thumbnails.deleteThumbnail(file.id);
 
     // Best-effort cleanup of generated reader/player pages, if any existed.
-    for (const linkField of ['textReaderLink', 'mdReaderLink', 'audioPlayerLink']) {
+    // Text/MD readers live in dirs.text, audio players in dirs.players.
+    const pageDirs = { textReaderLink: dirs.text, mdReaderLink: dirs.text, audioPlayerLink: dirs.players };
+    for (const [linkField, pageDir] of Object.entries(pageDirs)) {
         if (!file[linkField]) continue;
+        // Older uploads may share one page: keep it while another file still links to it
+        if (registry.files.some(f => f !== file && f[linkField] === file[linkField])) continue;
         try {
-            const readerPath = path.join(dirs.players, path.basename(file[linkField]));
-            if (fs.existsSync(readerPath)) fs.unlinkSync(readerPath);
+            const pagePath = path.join(pageDir, path.basename(file[linkField]));
+            if (fs.existsSync(pagePath)) fs.unlinkSync(pagePath);
         } catch (e) {}
     }
 
@@ -2082,6 +2096,9 @@ router.post('/upload/complete', async (req, res) => {
 
     console.log(`🔗 [ASSEMBLING] ${manifest.filename} from ${manifest.totalChunks} chunks`);
 
+    // Exact path of the file being assembled, so a failure removes only it
+    let assembledPath = null;
+
     try {
         const destDir = getDestDir(manifest.mimeType);
         const category = getDirCategory(destDir);
@@ -2100,12 +2117,18 @@ router.post('/upload/complete', async (req, res) => {
             .replace(/_+/g, '_');
         }
 
-        // Anonymous files never get a timestamp
-        let finalFilename = isAnonymized ? `${name}${ext}` : `${name}_${timestamp}${ext}`;
-        let finalPath = path.join(destDir, finalFilename);
+        // Anonymous files never get a timestamp; tier 2 may opt out of it.
+        // The final name is decided up front and created exclusively, so the
+        // assembled file never replaces an existing one and needs no rename.
+        const dropTimestamp = !isAnonymized && (removeTimestamp === true || removeTimestamp === 'true')
+            && auth.tier === 2 && /^\.\w+$/.test(ext) && name.length > 0;
+        const wantedFilename = (isAnonymized || dropTimestamp) ? `${name}${ext}` : `${name}_${timestamp}${ext}`;
+        const { filename: finalFilename, filePath: finalPath, fd } = safeFs.openUnique(destDir, wantedFilename);
+        assembledPath = finalPath;
+        if (dropTimestamp) console.log(`✂️ Removed timestamp: ${finalFilename}`);
 
         // Streaming assembly: createWriteStream + createReadStream pipe chain
-        const writeStream = fs.createWriteStream(finalPath);
+        const writeStream = fs.createWriteStream(finalPath, { fd });
 
         for (let i = 0; i < manifest.totalChunks; i++) {
             const chunkPath = path.join(dirs.chunks, `${uploadId}_chunk_${String(i).padStart(4, '0')}`);
@@ -2132,22 +2155,7 @@ router.post('/upload/complete', async (req, res) => {
 
         const finalStats = fs.statSync(finalPath);
         console.log(`📊 Assembly complete: ${finalStats.size} bytes`);
-
-        // Remove timestamp for tier 2 if requested (non-anonymous files only)
-        if (!isAnonymized && (removeTimestamp === true || removeTimestamp === 'true') && auth.tier === 2) {
-            const timestampMatch = finalFilename.match(/^(.+)_(\d{13})(\.\w+)$/);
-            if (timestampMatch) {
-                const [, baseName, , extension] = timestampMatch;
-                const newFilename = `${baseName}${extension}`;
-                const newPath = path.join(destDir, newFilename);
-
-                if (fs.existsSync(newPath)) fs.unlinkSync(newPath);
-                fs.renameSync(finalPath, newPath);
-                finalFilename = newFilename;
-                finalPath = newPath;
-                console.log(`✂️ Removed timestamp: ${finalFilename}`);
-            }
-        }
+        assembledPath = null; // fully written — from here on it is a real upload
 
         // Clean up manifest
         const manifestPath = path.join(dirs.chunks, `${uploadId}_manifest.json`);
@@ -2278,15 +2286,10 @@ router.post('/upload/complete', async (req, res) => {
             try { fs.unlinkSync(manifestPath); } catch (e) {}
         }
 
-        // Try to clean up partial assembled file
-        try {
-            const destDir = getDestDir(manifest.mimeType);
-            fs.readdirSync(destDir).forEach(f => {
-                if (f.includes(uploadId.split('_')[0])) {
-                    try { fs.unlinkSync(path.join(destDir, f)); } catch (e) {}
-                }
-            });
-        } catch (e) {}
+        // Clean up the partially assembled file (exact path, never a pattern)
+        if (assembledPath) {
+            try { fs.unlinkSync(assembledPath); } catch (e) {}
+        }
 
         res.status(500).json({ error: 'Upload assembly failed', details: error.message });
     } finally {
@@ -2544,15 +2547,54 @@ router.post('/batch/:id/zip', async (req, res) => {
         return res.status(400).json({ error: 'No files in batch' });
     }
 
-    const zipFilename = `batch_${batchId}.zip`;
-    const zipPath = path.join(dirs.download, zipFilename);
+    // Reuse the existing ZIP when it was built from exactly the current file set
+    const fileIds = batchFiles.map(f => f.id).sort().join(',');
+    const existing = registry.files.find(f => isBatchZipOf(f, batchId) && f.zipOfFiles === fileIds && fs.existsSync(f.path));
+    if (existing) {
+        return res.json({ link: `https://files.tomasekvalla.cz/files/download/${existing.storedName}` });
+    }
+
+    // Concurrent clicks share one build instead of racing on the same file
+    let build = batchZipBuilds.get(batchId);
+    if (!build) {
+        build = buildBatchZip(batchId, batchEntry, batchFiles, fileIds).finally(() => batchZipBuilds.delete(batchId));
+        batchZipBuilds.set(batchId, build);
+    }
+
+    try {
+        res.json({ link: await build });
+    } catch (error) {
+        console.error(`❌ [BATCH ZIP FAILED] ${batchId}:`, error);
+        res.status(500).json({ error: 'ZIP creation failed', details: error.message });
+    }
+});
+
+const batchZipBuilds = new Map();
+
+// Older code pushed a new registry entry (same path) on every click and had no isBatchZip flag
+function isBatchZipOf(f, batchId) {
+    return f.batchId === batchId
+        && (f.isBatchZip === true || (f.mimeType === 'application/zip' && f.storedName === `batch_${batchId}.zip`));
+}
+
+async function buildBatchZip(batchId, batchEntry, batchFiles, fileIds) {
+    // Drop stale ZIPs of this batch first, so the registry ends up with exactly one
+    const stale = registry.files.filter(f => isBatchZipOf(f, batchId));
+    for (const f of stale) registry.files.splice(registry.files.indexOf(f), 1);
+    for (const p of new Set(stale.map(f => f.path))) {
+        if (p && !isPathReferenced(p)) try { fs.unlinkSync(p); } catch (e) {}
+    }
+    if (stale.length) saveRegistry();
+
+    const { filename: zipFilename, filePath: zipPath, fd } = safeFs.openUnique(dirs.download, `batch_${batchId}.zip`);
 
     try {
         await new Promise((resolve, reject) => {
-            const output = fs.createWriteStream(zipPath);
+            const output = fs.createWriteStream(zipPath, { fd });
             const archive = archiver('zip', { zlib: { level: 5 } });
 
             output.on('close', resolve);
+            output.on('error', reject);
             archive.on('error', reject);
 
             archive.pipe(output);
@@ -2567,39 +2609,36 @@ router.post('/batch/:id/zip', async (req, res) => {
 
             archive.finalize();
         });
-
-        const zipStats = fs.statSync(zipPath);
-
-        // Register the ZIP in the registry with the same expiration as the batch
-        const zipFileId = generateFileId();
-        registry.files.push({
-            id: zipFileId,
-            originalName: zipFilename,
-            storedName: zipFilename,
-            path: zipPath,
-            directory: 'download',
-            size: zipStats.size,
-            mimeType: 'application/zip',
-            category: 'file',
-            uploadedAt: Date.now(),
-                            expiresAt: batchEntry.expiresAt,
-                            batchId: batchId
-        });
-        saveRegistry();
-
-        const link = `https://files.tomasekvalla.cz/files/download/${zipFilename}`;
-        console.log(`📦 [BATCH ZIP] Created ${zipFilename} (${formatBytes(zipStats.size)})`);
-
-        res.json({ link });
-
     } catch (error) {
-        console.error(`❌ [BATCH ZIP FAILED] ${batchId}:`, error);
-        if (fs.existsSync(zipPath)) {
-            try { fs.unlinkSync(zipPath); } catch (e) {}
-        }
-        res.status(500).json({ error: 'ZIP creation failed', details: error.message });
+        try { fs.unlinkSync(zipPath); } catch (e) {}
+        throw error;
     }
-});
+
+    const zipStats = fs.statSync(zipPath);
+
+    // Register the ZIP in the registry with the same expiration as the batch
+    const zipFileId = generateFileId();
+    registry.files.push({
+        id: zipFileId,
+        originalName: `batch_${batchId}.zip`,
+        storedName: zipFilename,
+        path: zipPath,
+        directory: 'download',
+        size: zipStats.size,
+        mimeType: 'application/zip',
+        category: 'file',
+        uploadedAt: Date.now(),
+        expiresAt: batchEntry.expiresAt,
+        batchId: batchId,
+        isBatchZip: true,
+        zipOfFiles: fileIds
+    });
+    saveRegistry();
+
+    console.log(`📦 [BATCH ZIP] Created ${zipFilename} (${formatBytes(zipStats.size)})`);
+
+    return `https://files.tomasekvalla.cz/files/download/${zipFilename}`;
+}
 
 // ─── POST /api/upload (standard small-file upload) ──────────────────────────
 
@@ -2636,15 +2675,16 @@ router.post('/upload', upload.single('file'), async (req, res) => {
     }
 
     const destDir = path.dirname(req.file.path);
-    let finalPath = path.join(destDir, finalFilename);
 
-    // Avoid clobbering an existing file with the same final name
-    if (fs.existsSync(finalPath)) {
-        finalFilename = `${path.basename(finalFilename, ext)}_${crypto.randomBytes(3).toString('hex')}${ext}`;
-        finalPath = path.join(destDir, finalFilename);
+    // Atomic no-clobber move: an existing file with the same name gets a suffix, never replaced
+    let finalPath;
+    try {
+        ({ filename: finalFilename, filePath: finalPath } = safeFs.moveUnique(req.file.path, destDir, finalFilename));
+    } catch (e) {
+        console.error(`❌ [UPLOAD] Could not store ${req.file.originalname}:`, e.message);
+        try { fs.unlinkSync(req.file.path); } catch (e2) {}
+        return res.status(500).json({ error: 'Upload failed', details: e.message });
     }
-
-    fs.renameSync(req.file.path, finalPath);
     req.file.filename = finalFilename;
     req.file.path = finalPath;
 

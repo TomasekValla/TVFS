@@ -3,6 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const { analyzeAudio } = require('./bpmAnalyzer');
+const safeFs = require('./safeFs');
 
 const FONTS_CSS_URL = 'https://files.tomasekvalla.cz/fonts/fonts.css';
 
@@ -1990,9 +1991,6 @@ function maybeCreateAudioPlayer(storedFilename, originalName, mimeType, filePath
     if (!fs.existsSync(playersDir)) fs.mkdirSync(playersDir, { recursive: true });
 
     const slug = originalName.replace(/\.[^.]+$/, '').replace(/[^\w\-]/g, '_').replace(/_+/g, '_').slice(0, 40) || 'track';
-    const playerFilename = `${slug}_${Date.now()}_player.html`;
-    const playerPath = path.join(playersDir, playerFilename);
-
     let meta;
     try {
         meta = analyzeAudio(filePath);
@@ -2002,7 +2000,8 @@ function maybeCreateAudioPlayer(storedFilename, originalName, mimeType, filePath
     }
 
     const html = generateAudioPlayerHtml(publicAudioUrl, originalName, meta, backUrl);
-    fs.writeFileSync(playerPath, html);
+    const { filename: playerFilename, filePath: playerPath } =
+        safeFs.writeFileUnique(playersDir, `${slug}_${Date.now()}_player.html`, html);
 
     return {
         playerFilename,
@@ -2026,9 +2025,6 @@ function maybeCreateProtectedAudioPlayer(originalName, mimeType, filePath, playe
     if (!fs.existsSync(playersDir)) fs.mkdirSync(playersDir, { recursive: true });
 
     const slug = originalName.replace(/\.[^.]+$/, '').replace(/[^\w\-]/g, '_').replace(/_+/g, '_').slice(0, 40) || 'track';
-    const playerFilename = `${slug}_${shareId}_player.html`;
-    const playerPath = path.join(playersDir, playerFilename);
-
     let meta;
     try {
         meta = analyzeAudio(filePath);
@@ -2038,7 +2034,9 @@ function maybeCreateProtectedAudioPlayer(originalName, mimeType, filePath, playe
     }
 
     const html = generateProtectedAudioPlayerHtml(contentUrl, originalName, meta, shareId, landingUrl);
-    fs.writeFileSync(playerPath, html);
+    // Same-named tracks in one share (different folders) share slug + shareId: never overwrite
+    const { filename: playerFilename, filePath: playerPath } =
+        safeFs.writeFileUnique(playersDir, `${slug}_${shareId}_player.html`, html);
 
     return { playerFilename, playerPath, html, meta, font: fontForBpm(meta.bpm) };
 }

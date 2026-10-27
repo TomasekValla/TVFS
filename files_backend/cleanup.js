@@ -152,7 +152,8 @@ function main() {
 
         // ─── Pass 1: walk the registry, delete anything expired ───────────
         const survivingFiles = [];
-        for (const file of registry.files) {
+        for (let i = 0; i < registry.files.length; i++) {
+            const file = registry.files[i];
             if (typeof file.expiresAt !== 'number') {
                 // Malformed entry — don't silently keep it forever, but don't
                 // guess either. Flag it loudly and keep it so a human can look.
@@ -169,7 +170,15 @@ function main() {
             // Expired — delete from disk first, then drop from registry.
             let sizeForLog = file.size || 0;
             try {
-                if (file.path && fs.existsSync(file.path)) {
+                // Entries created before the no-clobber fix may share a path. Only the
+                // last entry referencing it (surviving or not yet processed) deletes the file.
+                const sharedByOther = file.path && (
+                    survivingFiles.some(f => f.path === file.path) ||
+                    registry.files.slice(i + 1).some(f => f.path === file.path)
+                );
+                if (sharedByOther) {
+                    console.warn(`  ⚠️  Skipping unlink of ${file.path}: still referenced by another registry entry`);
+                } else if (file.path && fs.existsSync(file.path)) {
                     const stats = fs.statSync(file.path);
                     sizeForLog = stats.size;
                     fs.unlinkSync(file.path);

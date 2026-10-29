@@ -805,13 +805,15 @@ silentCheck();
 </html>`;
 }
 
-function maybeCreateTextReader(storedFilename, originalName, mimeType, expiresAt) {
+// fileUrl: the real public link of the stored file. Readers must not guess the
+// directory: it depends on the MIME type the browser sent, not on the extension.
+function maybeCreateTextReader(storedFilename, originalName, mimeType, expiresAt, fileUrl) {
     // Generate a reader page for .txt files (or text/plain)
     const isTxt = mimeType === 'text/plain' || storedFilename.toLowerCase().endsWith('.txt');
     if (!isTxt) return null;
 
     const readerSlug = originalName.replace(/\.[^.]+$/, '').replace(/[^\w\-]/g, '_').replace(/_+/g, '_').slice(0, 40) || generateReaderId();
-    const txtUrl = `https://files.tomasekvalla.cz/files/download/${storedFilename}`;
+    const txtUrl = fileUrl;
 
     try {
         const html = generateTextReaderHtml(txtUrl, originalName);
@@ -1113,11 +1115,13 @@ silentCheck();
 </html>`;
 }
 
-function maybeCreateMdReader(storedFilename, originalName, mimeType, expiresAt) {
+// .md files land in files/text only when the browser sends text/markdown; Windows
+// browsers usually send application/octet-stream, which stores them in files/download.
+function maybeCreateMdReader(storedFilename, originalName, mimeType, expiresAt, fileUrl) {
     const isMd = mimeType === 'text/markdown' || storedFilename.toLowerCase().endsWith('.md');
     if (!isMd) return null;
 
-    const mdUrl = `https://files.tomasekvalla.cz/files/text/${storedFilename}`;
+    const mdUrl = fileUrl;
     try {
         const readerSlug = originalName.replace(/\.[^.]+$/, '').replace(/[^\w\-]/g, '_').replace(/_+/g, '_').slice(0, 40) || generateReaderId();
         const html = generateMdReaderHtml(mdUrl, originalName);
@@ -2171,11 +2175,11 @@ router.post('/upload/complete', async (req, res) => {
 
         // Register in file registry
         const fileId = generateFileId();
-        const textReaderLink = maybeCreateTextReader(finalFilename, manifest.filename, manifest.mimeType, expiresAt);
+        const textReaderLink = maybeCreateTextReader(finalFilename, manifest.filename, manifest.mimeType, expiresAt, link);
         const textReaderStyledLink = textReaderLink
             ? `[${manifest.filename} - TomasekValla Filestream System Reader](${textReaderLink})`
             : null;
-        const mdReaderLink = maybeCreateMdReader(finalFilename, manifest.filename, manifest.mimeType, expiresAt);
+        const mdReaderLink = maybeCreateMdReader(finalFilename, manifest.filename, manifest.mimeType, expiresAt, link);
         const mdReaderStyledLink = mdReaderLink ? `[${manifest.filename} - TVFS MD Reader](${mdReaderLink})` : null;
         const audioPlayerResult = (getFileType(manifest.mimeType) === 'audio')
             ? maybeCreateAudioPlayer(finalFilename, manifest.filename, manifest.mimeType, finalPath, link, expiresAt)
@@ -2703,11 +2707,11 @@ router.post('/upload', upload.single('file'), async (req, res) => {
     const fileId = generateFileId();
     const fileStats = fs.statSync(req.file.path);
 
-    const textReaderLink = maybeCreateTextReader(filename, originalName, mimetype, expiresAt);
+    const textReaderLink = maybeCreateTextReader(filename, originalName, mimetype, expiresAt, link);
     const textReaderStyledLink = textReaderLink
         ? `[${originalName} - TomasekValla Filestream System Reader](${textReaderLink})`
         : null;
-    const mdReaderLink = maybeCreateMdReader(filename, originalName, mimetype, expiresAt);
+    const mdReaderLink = maybeCreateMdReader(filename, originalName, mimetype, expiresAt, link);
     const mdReaderStyledLink = mdReaderLink ? `[${originalName} - TVFS MD Reader](${mdReaderLink})` : null;
 
     const audioPlayerResult = (fileType === 'audio')

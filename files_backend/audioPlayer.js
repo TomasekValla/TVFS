@@ -2,6 +2,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { spawnSync } = require('child_process');
 const { analyzeAudio } = require('./bpmAnalyzer');
 const safeFs = require('./safeFs');
 
@@ -67,208 +68,49 @@ const ICONS = {
     mute: `<svg viewBox="0 0 24 24" fill="none"><path d="M4 9.5v5h3.6l5 4V5.5l-5 4H4Z" fill="currentColor"/><path d="M15.5 10 19.5 14M19.5 10 15.5 14" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>`,
     speed: `<svg viewBox="0 0 24 24" fill="none"><path d="M4.2 17a8.5 8.5 0 1 1 15.6 0" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M12 13.6 15.8 9" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/><circle cx="12" cy="13.6" r="1.6" fill="currentColor"/></svg>`,
     disc: `<svg viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="8.5" stroke="currentColor" stroke-width="1.8"/><circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="1.8"/><circle cx="12" cy="12" r="1" fill="currentColor"/></svg>`,
+    help: `<svg viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="8.6" stroke="currentColor" stroke-width="1.8"/><path d="M9.6 9.4a2.5 2.5 0 0 1 4.9.7c0 1.7-2.5 2.1-2.5 3.7" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" fill="none"/><circle cx="12" cy="16.9" r="1.1" fill="currentColor"/></svg>`,
+    loop: `<svg viewBox="0 0 24 24" fill="none"><path d="M4.5 11.5V10a3.5 3.5 0 0 1 3.5-3.5h11" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" fill="none"/><path d="M16 3.6 19 6.5l-3 2.9" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none"/><path d="M19.5 12.5V14a3.5 3.5 0 0 1-3.5 3.5H5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" fill="none"/><path d="M8 20.4 5 17.5l3-2.9" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>`,
+    reset: `<svg viewBox="0 0 24 24" fill="none"><path d="M5.2 12a6.8 6.8 0 1 0 2-4.8" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" fill="none"/><path d="M6.6 3.8v3.9h3.9" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>`,
 };
 
-// ─── Shared player snippets ─────────────────────────────────────────────────
-// The normal and the TVFS-Users-Only player are two separate page templates,
-// but title marquee + speed control are identical in both, so they live here
-// once and get interpolated into each template.
-
-// Title marquee: rest at the start, glide to the end, rest, glide back.
-// The edge fades are animated through registered custom properties so a
-// fade only exists on the side where text is actually clipped -- the first
-// and last letters are never dimmed while the title is resting.
-const MARQUEE_CSS = `
-@property --mq-fade-l{syntax:'<length>'; inherits:false; initial-value:0px;}
-@property --mq-fade-r{syntax:'<length>'; inherits:false; initial-value:0px;}
-.title{width:100%; overflow:hidden; font-family:var(--track-font); font-weight:700; font-size:1.15rem; text-align:center;}
-.title .mq-inner{display:inline-block; white-space:nowrap;}
-.title.marquee{
-  text-align:left; --mq-fade-l:0px; --mq-fade-r:20px;
-  -webkit-mask-image:linear-gradient(to right,transparent 0px,#000 var(--mq-fade-l),#000 calc(100% - var(--mq-fade-r)),transparent 100%);
-  mask-image:linear-gradient(to right,transparent 0px,#000 var(--mq-fade-l),#000 calc(100% - var(--mq-fade-r)),transparent 100%);
+// ─── Client code ────────────────────────────────────────────────────────────
+// The player UI lives in audioPlayerClient/ as plain CSS/JS files and is inlined
+// into every generated page, so a player keeps working on its own even after this
+// module changes (already generated players are never rewritten).
+const CLIENT_DIR = path.join(__dirname, 'audioPlayerClient');
+function readClient(name) {
+    return fs.readFileSync(path.join(CLIENT_DIR, name), 'utf8');
 }
-.title.marquee .mq-inner{padding:0 6px; will-change:transform;} /* 6px per side = MQ_PAD/2 in the script */
-.title.clamped .mq-inner{display:block; overflow:hidden; text-overflow:ellipsis;}`;
-
-const MARQUEE_JS = `
-// ─── Title marquee ──────────────────────────────────────────────────────
-var MQ_PAD = 12;            // total horizontal padding of .mq-inner while scrolling
-var MQ_HOLD_START = 2000;   // ms the title rests at the start (readable before it moves)
-var MQ_HOLD_END = 1800;     // ms it rests once the end is reached
-var MQ_SPEED = 30;          // px per second while gliding forward
-var MQ_FADE = '20px';
-var mqAnims = [];
-var mqKey = '';
-var mqRaf = 0;
-var mqReduce = window.matchMedia ? window.matchMedia('(prefers-reduced-motion: reduce)') : null;
-
-function stopTitleMarquee(titleEl){
-  mqAnims.forEach(function(a){ try { a.cancel(); } catch (e) {} });
-  mqAnims = [];
-  mqKey = '';
-  titleEl.classList.remove('marquee');
-  titleEl.classList.remove('clamped');
+// Inline <script>/<style> content must never contain its own closing tag.
+function inlineSafe(src) {
+    return src.replace(/<\/(script|style)/gi, '<\\/$1');
 }
-
-function setupTitleMarquee(){
-  cancelAnimationFrame(mqRaf);
-  mqRaf = requestAnimationFrame(function(){
-    var titleEl = document.getElementById('title');
-    var inner = document.getElementById('titleInner');
-    var active = titleEl.classList.contains('marquee');
-    var natural = inner.offsetWidth - (active ? MQ_PAD : 0);
-    var box = titleEl.clientWidth;
-    var key = natural + '|' + box;
-    if (active && key === mqKey && mqAnims.length) return; // nothing changed -> don't restart mid-scroll
-
-    stopTitleMarquee(titleEl);
-    if (natural - box <= 4) return;                         // fits, stays centred
-    if (mqReduce && mqReduce.matches){ titleEl.classList.add('clamped'); return; }
-
-    var dist = natural + MQ_PAD - box;
-    var tScroll = Math.min(24000, Math.max(3500, dist / MQ_SPEED * 1000));
-    var tBack = Math.min(4500, Math.max(1100, tScroll * 0.4));
-    var total = MQ_HOLD_START + tScroll + MQ_HOLD_END + tBack;
-    var a = MQ_HOLD_START / total;                          // scroll starts
-    var b = (MQ_HOLD_START + tScroll) / total;              // end reached
-    var c = (MQ_HOLD_START + tScroll + MQ_HOLD_END) / total; // glide back starts
-    var e = Math.min(500, tScroll / 3, tBack / 3) / total;  // fade ramp length
-
-    titleEl.classList.add('marquee');
-    mqKey = key;
-    var opts = { duration: total, iterations: Infinity };
-    try {
-      mqAnims.push(inner.animate([
-        { transform: 'translateX(0px)', offset: 0 },
-        { transform: 'translateX(0px)', offset: a, easing: 'cubic-bezier(.45,.05,.2,1)' },
-        { transform: 'translateX(' + (-dist) + 'px)', offset: b },
-        { transform: 'translateX(' + (-dist) + 'px)', offset: c, easing: 'cubic-bezier(.5,0,.2,1)' },
-        { transform: 'translateX(0px)', offset: 1 }
-      ], opts));
-      // Left fade only while text is scrolled away from the start,
-      // right fade only while there is still text to the right.
-      mqAnims.push(titleEl.animate([
-        { '--mq-fade-l': '0px', '--mq-fade-r': MQ_FADE, offset: 0 },
-        { '--mq-fade-l': '0px', offset: a },
-        { '--mq-fade-l': MQ_FADE, offset: a + e },
-        { '--mq-fade-r': MQ_FADE, offset: b - e },
-        { '--mq-fade-r': '0px', offset: b },
-        { '--mq-fade-r': '0px', offset: c },
-        { '--mq-fade-r': MQ_FADE, offset: c + e },
-        { '--mq-fade-l': MQ_FADE, offset: 1 - e },
-        { '--mq-fade-l': '0px', '--mq-fade-r': MQ_FADE, offset: 1 }
-      ], opts));
-    } catch (err) {
-      // No Web Animations support: static title with both edges softened.
-      titleEl.style.setProperty('--mq-fade-l', '14px');
-      titleEl.style.setProperty('--mq-fade-r', '14px');
+// Read on first use (not at require time), so a missing client folder can only
+// break player generation, never the whole backend.
+let clientCache = null;
+function client() {
+    if (!clientCache) {
+        clientCache = {
+            css: inlineSafe(readClient('player.css')),
+            js: inlineSafe(readClient('player.js')),
+            worklets: inlineSafe(readClient('worklets.js')),
+        };
     }
-  });
+    return clientCache;
 }
-window.addEventListener('resize', setupTitleMarquee);
-window.addEventListener('load', setupTitleMarquee);
-// The title font is a web font picked from the BPM ladder. Measuring before it
-// has loaded gives the wrong overflow, so re-measure once fonts are in.
-if (document.fonts){
-  if (document.fonts.ready) document.fonts.ready.then(setupTitleMarquee);
-  if (document.fonts.addEventListener) document.fonts.addEventListener('loadingdone', setupTitleMarquee);
-}
-setupTitleMarquee();
-`;
 
-// Playback speed: 0.5x..2x on a log scale so 1.00x sits exactly in the middle.
-const SPEED_CSS = `
-.speedwrap{width:100%; display:flex; align-items:center; gap:10px; margin-top:-8px;}
-.speed-btn{
-  flex:0 0 auto; width:30px; height:30px; border-radius:50%; background:var(--glass); border:1px solid var(--border);
-  color:var(--muted); display:flex; align-items:center; justify-content:center; cursor:pointer; transition:all .15s;
+// Integrated loudness of the whole track (EBU R128, LUFS), or null if ffmpeg is
+// missing or fails. The player turns tracks louder than the target down to it.
+function measureLoudness(filePath) {
+    try {
+        const r = spawnSync('ffmpeg', ['-hide_banner', '-nostats', '-i', filePath, '-vn', '-af', 'ebur128=framelog=verbose', '-f', 'null', '-'],
+            { encoding: 'utf8', timeout: 120000, maxBuffer: 16 * 1024 * 1024 });
+        const m = /Integrated loudness:\s*I:\s*(-?\d+(?:\.\d+)?) LUFS/.exec(r.stderr || '');
+        return m ? parseFloat(m[1]) : null;
+    } catch (e) {
+        return null;
+    }
 }
-.speed-btn svg{width:15px; height:15px;}
-.speed-btn:hover,.speed-btn.is-changed{color:var(--accent); border-color:var(--accent);}
-.speed-slider{
-  -webkit-appearance:none; appearance:none; flex:1; height:6px; border-radius:99px; cursor:pointer; outline:none;
-  background:linear-gradient(90deg, rgba(255,255,255,.12) 0%, rgba(255,255,255,.12) var(--s-lo,50%), var(--accent) var(--s-lo,50%), var(--accent) var(--s-hi,50%), rgba(255,255,255,.12) var(--s-hi,50%));
-}
-.speed-slider::-webkit-slider-thumb{-webkit-appearance:none; width:14px; height:14px; border-radius:50%; background:#fff; box-shadow:0 0 0 4px rgba(47,255,196,.25); cursor:grab;}
-.speed-slider::-moz-range-thumb{width:14px; height:14px; border-radius:50%; background:#fff; border:none; box-shadow:0 0 0 4px rgba(47,255,196,.25); cursor:grab;}
-.speed-pct{flex:0 0 auto; width:44px; text-align:right; font-size:.68rem; color:var(--muted); font-family:'JetBrains Mono',monospace;}
-.speed-pct.is-changed{color:var(--accent);}
-.pitch-chk{flex:0 0 auto; position:relative; width:16px; height:16px; cursor:pointer; display:block;}
-.pitch-chk input{position:absolute; inset:0; width:100%; height:100%; margin:0; opacity:0; cursor:pointer;}
-.pitch-chk span{
-  position:absolute; inset:0; border-radius:5px; background:var(--glass); border:1px solid var(--border);
-  transition:all .15s; pointer-events:none;
-}
-.pitch-chk span::after{
-  content:''; position:absolute; left:4.5px; top:1.5px; width:4px; height:8px; border:solid #06110e; border-width:0 2px 2px 0;
-  transform:rotate(45deg) scale(0); transition:transform .12s;
-}
-.pitch-chk:hover span{border-color:var(--accent);}
-.pitch-chk input:checked + span{background:var(--accent); border-color:var(--accent);}
-.pitch-chk input:checked + span::after{transform:rotate(45deg) scale(1);}
-.pitch-chk input:focus-visible + span{box-shadow:0 0 0 3px rgba(47,255,196,.3);}`;
-
-const SPEED_HTML = `
-    <div class="speedwrap">
-      <button class="speed-btn" id="btnSpeedReset" title="Playback speed (click to reset to 1x)">${ICONS.speed}</button>
-      <input type="range" class="speed-slider" id="speed" min="-100" max="100" step="1" value="0" title="Playback speed">
-      <span class="speed-pct" id="speedPct">1.00\u00d7</span>
-      <label class="pitch-chk" title="Pitch follows speed (nightcore / slowed) \u2013 off = speed only"><input type="checkbox" id="pitchLink"><span></span></label>
-    </div>`;
-
-const SPEED_JS = `
-// ─── Playback speed ─────────────────────────────────────────────────────
-// Slider position is log2(rate)*100, so -100..100 maps to 0.5x..2x with
-// 1.00x dead centre. Pitch is preserved by default (native time-stretch); the checkbox next to the slider lets it follow speed instead. defaultPlaybackRate
-// is set too: the media element resets playbackRate to it whenever a new src
-// loads, which is exactly what the protected player does after login.
-var speedEl = document.getElementById('speed');
-var speedPct = document.getElementById('speedPct');
-var btnSpeedReset = document.getElementById('btnSpeedReset');
-var currentSpeed = 1;
-var pitchLink = document.getElementById('pitchLink');
-// Unchecked = pitch preserved (speed only). Checked = pitch follows speed
-// (nightcore when faster, slowed/chopped-and-screwed when slower).
-function applyPitchMode(){
-  var keep = !pitchLink.checked;
-  audio.preservesPitch = keep;
-  audio.webkitPreservesPitch = keep;
-  audio.mozPreservesPitch = keep;
-}
-applyPitchMode();
-pitchLink.addEventListener('change', applyPitchMode);
-// Some browsers re-apply the default when a new src loads, so set it again.
-audio.addEventListener('loadedmetadata', applyPitchMode);
-
-function applySpeed(rate){
-  currentSpeed = Math.max(0.5, Math.min(2, rate));
-  audio.defaultPlaybackRate = currentSpeed;
-  audio.playbackRate = currentSpeed;
-  var pos = Math.round(Math.log(currentSpeed) / Math.LN2 * 100);
-  var pct = (pos + 100) / 2;
-  speedEl.value = pos;
-  speedEl.style.setProperty('--s-lo', Math.min(50, pct) + '%');
-  speedEl.style.setProperty('--s-hi', Math.max(50, pct) + '%');
-  speedPct.textContent = currentSpeed.toFixed(2) + '\u00d7';
-  var changed = Math.abs(currentSpeed - 1) > 0.004;
-  speedPct.classList.toggle('is-changed', changed);
-  btnSpeedReset.classList.toggle('is-changed', changed);
-  // Beat cadence scales with speed, so the visualizer's ring cooldown does too.
-  if (typeof beatCooldownMs === 'function' && bpmHint) spawnCooldownMs = beatCooldownMs();
-}
-applySpeed(1);
-
-speedEl.addEventListener('input', function(){
-  var v = Number(speedEl.value);
-  if (Math.abs(v) <= 4) v = 0;                                // magnetic 1.00x
-  applySpeed(Math.round(Math.pow(2, v / 100) * 100) / 100);   // 0.01x steps
-});
-btnSpeedReset.addEventListener('click', function(){ applySpeed(1); });
-`;
-
-// 8 bands for the Fruity-EQ-2-style peaking EQ, roughly log-spaced.
-const EQ_BANDS_HZ = [60, 150, 400, 1000, 2500, 6000, 10000, 16000];
 
 // Shared "one-line" summary of the ffprobe/BPM metadata — used both on the
 // player page itself and to build the copy-able styled link, so the two
@@ -287,1029 +129,31 @@ function formatMetaSummary(meta) {
     ].filter(Boolean).join(' · ');
 }
 
-function generateAudioPlayerHtml(audioUrl, originalName, meta, backUrl) {
-    const font = fontForBpm(meta.bpm);
-    const durationLabel = formatDuration(meta.durationSec);
-    const metaBits = formatMetaSummary(meta);
-    const resolvedBackUrl = backUrl || '/upload.html';
-
-    return `<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-<meta name="theme-color" content="#0a0a0a">
-<title>${escapeHtml(originalName)} — TVFS Audio Player</title>
-<link rel="stylesheet" href="${FONTS_CSS_URL}">
-<style>
-*,*::before,*::after{box-sizing:border-box;}
-:root{
-  --bg:#0a0a0a; --fg:#eee; --muted:#9a9a9a; --border:rgba(255,255,255,.14);
-  --accent:#2fffc4; --accent2:#7c4dff;
-  --glass:rgba(255,255,255,.06); --glass-strong:rgba(20,20,24,.55);
-  --track-font:${font.stack};
-}
-html,body{height:100%;}
-body{
-  margin:0; background:var(--bg); color:var(--fg); overflow-x:hidden;
-  font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
-  min-height:100vh; display:flex; flex-direction:column; align-items:center;
-  position:relative;
-}
-#waveCanvas{position:fixed; inset:0; width:100%; height:100%; z-index:0; pointer-events:none;}
-
-.topbar{position:relative; z-index:2; width:100%; text-align:center; padding:28px 20px 6px;}
-.topbar a.back{position:absolute; left:20px; top:30px; color:var(--muted); display:inline-flex; width:20px; height:20px;}
-.topbar a.back svg{width:100%;height:100%;}
-.topbar h1{margin:0; font-size:1rem; letter-spacing:.14em; text-transform:uppercase; font-weight:700; color:var(--muted);}
-.topbar h1 span{color:var(--accent);}
-
-.stage{position:relative; z-index:2; flex:1; width:100%; display:flex; align-items:center; justify-content:center; padding:24px 16px 60px;}
-
-.card{
-  width:100%; max-width:460px;
-  background:var(--glass);
-  border:1px solid var(--border);
-  border-radius:26px;
-  backdrop-filter:blur(22px) saturate(140%);
-  -webkit-backdrop-filter:blur(22px) saturate(140%);
-  box-shadow:0 20px 60px rgba(0,0,0,.5), inset 0 1px 0 rgba(255,255,255,.08);
-  padding:30px 26px 26px;
-  display:flex; flex-direction:column; align-items:center; gap:20px;
-}
-
-.disc{
-  width:120px; height:120px; border-radius:50%;
-  background:conic-gradient(from 180deg, var(--accent), var(--accent2), var(--accent));
-  display:flex; align-items:center; justify-content:center;
-  box-shadow:0 8px 30px rgba(124,77,255,.35), inset 0 0 0 6px rgba(10,10,10,.85);
-  position:relative;
-}
-.disc::after{content:'';position:absolute;width:16px;height:16px;border-radius:50%;background:#0a0a0a;box-shadow:inset 0 0 0 2px rgba(255,255,255,.15);}
-.disc.spinning{animation:spin 6s linear infinite;}
-@keyframes spin{to{transform:rotate(360deg);}}
-
-${MARQUEE_CSS}
-
-.seekwrap{width:100%; display:flex; flex-direction:column; gap:6px;}
-.seek{
-  -webkit-appearance:none; appearance:none; width:100%; height:6px; border-radius:99px;
-  background:linear-gradient(90deg, var(--accent) 0%, var(--accent) var(--pct,0%), rgba(255,255,255,.12) var(--pct,0%));
-  cursor:pointer; outline:none;
-}
-.seek::-webkit-slider-thumb{-webkit-appearance:none; width:15px; height:15px; border-radius:50%; background:#fff; box-shadow:0 0 0 4px rgba(47,255,196,.25); cursor:grab;}
-.seek::-moz-range-thumb{width:15px; height:15px; border-radius:50%; background:#fff; border:none; box-shadow:0 0 0 4px rgba(47,255,196,.25); cursor:grab;}
-.times{display:flex; justify-content:space-between; font-size:.72rem; color:var(--muted); font-family:'JetBrains Mono',monospace;}
-
-.controls{display:flex; align-items:center; justify-content:center; gap:18px;}
-.ctrl-btn{
-  background:var(--glass); border:1px solid var(--border); color:var(--fg);
-  width:44px; height:44px; border-radius:50%; display:flex; align-items:center; justify-content:center;
-  cursor:pointer; transition:all .15s;
-}
-.ctrl-btn svg{width:18px; height:18px;}
-.ctrl-btn:hover{border-color:var(--accent); color:var(--accent); background:rgba(47,255,196,.1);}
-.ctrl-btn.primary{width:58px; height:58px; background:linear-gradient(135deg,var(--accent),var(--accent2)); color:#0a0a0a; border:none;}
-.ctrl-btn.primary svg{width:22px; height:22px;}
-.ctrl-btn.primary:hover{filter:brightness(1.12); color:#0a0a0a;}
-
-.rowbtns{display:flex; gap:10px; width:100%;}
-.pill{
-  flex:1; display:flex; align-items:center; justify-content:center; gap:7px;
-  padding:11px 14px; border-radius:14px; background:var(--glass); border:1px solid var(--border);
-  color:var(--fg); font-size:.78rem; font-weight:700; cursor:pointer; text-decoration:none; transition:all .15s;
-}
-.pill svg{width:15px; height:15px;}
-.pill:hover{border-color:var(--accent); color:var(--accent); background:rgba(47,255,196,.08);}
-
-.volwrap{width:100%; display:flex; align-items:center; gap:10px;}
-.vol-mute{
-  flex:0 0 auto; width:30px; height:30px; border-radius:50%; background:var(--glass); border:1px solid var(--border);
-  color:var(--muted); display:flex; align-items:center; justify-content:center; cursor:pointer; transition:all .15s;
-}
-.vol-mute svg{width:15px; height:15px;}
-.vol-mute:hover{color:var(--accent); border-color:var(--accent);}
-.vol-mute.is-muted{color:var(--accent2); border-color:var(--accent2);}
-.vol-slider{
-  -webkit-appearance:none; appearance:none; flex:1; height:6px; border-radius:99px;
-  background:linear-gradient(90deg, var(--accent2) 0%, var(--accent2) var(--vpct,50%), rgba(255,255,255,.12) var(--vpct,50%));
-  cursor:pointer; outline:none;
-}
-.vol-slider::-webkit-slider-thumb{-webkit-appearance:none; width:14px; height:14px; border-radius:50%; background:#fff; box-shadow:0 0 0 4px rgba(124,77,255,.28); cursor:grab;}
-.vol-slider::-moz-range-thumb{width:14px; height:14px; border-radius:50%; background:#fff; border:none; box-shadow:0 0 0 4px rgba(124,77,255,.28); cursor:grab;}
-.vol-pct{flex:0 0 auto; width:36px; text-align:right; font-size:.68rem; color:var(--muted); font-family:'JetBrains Mono',monospace;}
-.vis-toggle{
-  flex:0 0 auto; width:30px; height:30px; border-radius:50%; background:var(--glass); border:1px solid var(--border);
-  color:var(--muted); display:flex; align-items:center; justify-content:center; cursor:pointer; transition:all .15s;
-}
-.vis-toggle svg{width:15px; height:15px;}
-.vis-toggle:hover{color:var(--accent); border-color:var(--accent);}
-.vis-toggle.is-off{color:var(--muted); border-color:var(--border); opacity:.45;}
-${SPEED_CSS}
-
-.meta{margin-top:2px; font-size:.66rem; color:var(--muted); font-family:'JetBrains Mono',monospace; text-align:center; letter-spacing:.01em; word-break:break-word;}
-
-/* ─── EQ popup ─── */
-.eq-overlay{position:fixed; inset:0; z-index:10; display:none; align-items:center; justify-content:center; background:rgba(0,0,0,.45); backdrop-filter:blur(3px); padding:16px;}
-.eq-overlay.open{display:flex;}
-.eq-panel{
-  width:100%; max-width:440px; background:var(--glass-strong); border:1px solid var(--border);
-  border-radius:22px; backdrop-filter:blur(30px) saturate(160%); -webkit-backdrop-filter:blur(30px) saturate(160%);
-  box-shadow:0 24px 70px rgba(0,0,0,.6); padding:20px 18px 24px; position:relative;
-}
-.eq-head{display:flex; align-items:center; justify-content:space-between; margin-bottom:10px;}
-.eq-head h2{margin:0; font-size:.85rem; letter-spacing:.06em; text-transform:uppercase; color:var(--muted);}
-.eq-close{width:30px; height:30px; border-radius:50%; background:var(--glass); border:1px solid var(--border); color:var(--fg); display:flex; align-items:center; justify-content:center; cursor:pointer;}
-.eq-close svg{width:13px; height:13px;}
-.eq-close:hover{color:var(--accent); border-color:var(--accent);}
-.eq-canvas-wrap{position:relative; width:100%; aspect-ratio:16/12.5; background:rgba(0,0,0,.35); border:1px solid var(--border); border-radius:14px; overflow:hidden; touch-action:none;}
-#eqSvg{width:100%; height:100%; display:block;}
-.eq-node{cursor:grab;}
-.eq-node:active{cursor:grabbing;}
-.eq-tooltip{
-  position:absolute; pointer-events:none; transform:translate(-50%,-130%);
-  background:rgba(10,10,12,.92); border:1px solid var(--border); border-radius:8px;
-  padding:4px 8px; font-size:.68rem; font-family:'JetBrains Mono',monospace; font-weight:700;
-  color:#fff; white-space:nowrap; opacity:0; transition:opacity .1s; z-index:5;
-}
-.eq-tooltip.show{opacity:1;}
-.eq-reset{margin-top:14px; width:100%; padding:10px; border-radius:12px; background:var(--glass); border:1px solid var(--border); color:var(--muted); font-size:.72rem; font-weight:700; cursor:pointer;}
-.eq-reset:hover{color:var(--accent); border-color:var(--accent);}
-
-@media (max-width:520px){
-  .card{padding:24px 18px 20px; border-radius:22px;}
-  .disc{width:96px; height:96px;}
-  .ctrl-btn{width:40px; height:40px;}
-  .ctrl-btn.primary{width:52px; height:52px;}
-}
-</style>
-</head>
-<body>
-<canvas id="waveCanvas"></canvas>
-
-<div class="topbar">
-  <a class="back" href="${escapeHtml(resolvedBackUrl)}" title="Back"></a>
-  <h1>TVFS <span>Audio Player</span></h1>
-</div>
-
-<div class="stage">
-  <div class="card">
-    <div class="disc" id="disc"></div>
-    <div class="title" id="title"><span class="mq-inner" id="titleInner">${escapeHtml(originalName.replace(/\.[^./]+$/, ''))}</span></div>
-
-    <div class="seekwrap">
-      <input type="range" class="seek" id="seek" min="0" max="1000" value="0">
-      <div class="times">
-        <span id="tElapsed">0:00</span>
-        <span id="tRemaining">${durationLabel ? '-' + durationLabel : '-0:00'}</span>
-      </div>
-    </div>
-
-    <div class="controls">
-      <button class="vol-mute" id="btnMute" title="Mute">${ICONS.volume}</button>
-      <button class="ctrl-btn" id="btnRestart" title="Back to start">${ICONS.restart}</button>
-      <button class="ctrl-btn primary" id="btnPlay" title="Play / Pause">${ICONS.play}</button>
-      <button class="ctrl-btn" id="btnStop" title="Stop">${ICONS.stop}</button>
-      <button class="vis-toggle" id="btnVis" title="Toggle visualizer">${ICONS.disc}</button>
-    </div>
-
-    <div class="rowbtns">
-      <a class="pill" id="btnDownload" download title="Download original file">${ICONS.download}<span>Download</span></a>
-      <button class="pill" id="btnEq" title="Open EQ">${ICONS.eq}<span>EQ</span></button>
-    </div>
-
-    <div class="volwrap">
-      <input type="range" class="vol-slider" id="vol" min="0" max="200" value="100">
-      <span class="vol-pct" id="volPct">100%</span>
-    </div>
-${SPEED_HTML}
-
-    <div class="meta">${escapeHtml(metaBits)}</div>
-  </div>
-</div>
-
-<div class="eq-overlay" id="eqOverlay">
-  <div class="eq-panel">
-    <div class="eq-head">
-      <h2>8-Band EQ</h2>
-      <button class="eq-close" id="eqClose">${ICONS.close}</button>
-    </div>
-    <div class="eq-canvas-wrap">
-      <svg id="eqSvg" viewBox="0 0 400 290" preserveAspectRatio="none"></svg>
-      <div class="eq-tooltip" id="eqTooltip"></div>
-    </div>
-    <button class="eq-reset" id="eqReset">Reset all bands</button>
-  </div>
-</div>
-
-<audio id="audio" src="${audioUrl}" preload="metadata"></audio>
-
-<script>
-(function(){
-'use strict';
-var audio = document.getElementById('audio');
-var btnPlay = document.getElementById('btnPlay');
-var btnRestart = document.getElementById('btnRestart');
-var btnStop = document.getElementById('btnStop');
-var btnDownload = document.getElementById('btnDownload');
-var seek = document.getElementById('seek');
-var tElapsed = document.getElementById('tElapsed');
-var tRemaining = document.getElementById('tRemaining');
-var disc = document.getElementById('disc');
-var canvas = document.getElementById('waveCanvas');
-var ctx = canvas.getContext('2d');
-
-var AUDIO_URL = ${safeScriptJson(audioUrl)};
-var TRACK_BPM = ${safeScriptJson(meta.bpm)};
-btnDownload.href = AUDIO_URL;
-
-var ICON_PLAY = ${safeScriptJson(ICONS.play)};
-var ICON_PAUSE = ${safeScriptJson(ICONS.pause)};
-
-${MARQUEE_JS}
-
-function fmt(s){
-  if(!isFinite(s) || s<0) s=0;
-  var m=Math.floor(s/60), sec=Math.floor(s%60);
-  return m+':'+String(sec).padStart(2,'0');
-}
-
-function updateSeekUI(){
-  var dur = audio.duration || 0;
-  var cur = audio.currentTime || 0;
-  var pct = dur ? (cur/dur*1000) : 0;
-  seek.value = pct;
-  seek.style.setProperty('--pct', (dur ? cur/dur*100 : 0)+'%');
-  tElapsed.textContent = fmt(cur);
-  tRemaining.textContent = '-' + fmt(dur - cur);
-}
-
-audio.addEventListener('loadedmetadata', updateSeekUI);
-audio.addEventListener('timeupdate', updateSeekUI);
-audio.addEventListener('play', function(){ btnPlay.innerHTML = ICON_PAUSE; disc.classList.add('spinning'); });
-audio.addEventListener('pause', function(){ btnPlay.innerHTML = ICON_PLAY; disc.classList.remove('spinning'); });
-audio.addEventListener('ended', function(){ btnPlay.innerHTML = ICON_PLAY; disc.classList.remove('spinning'); });
-
-btnPlay.addEventListener('click', function(){
-  ensureAudioGraph();
-  if (audio.paused) audio.play(); else audio.pause();
-});
-btnRestart.addEventListener('click', function(){ audio.currentTime = 0; updateSeekUI(); });
-btnStop.addEventListener('click', function(){ audio.pause(); audio.currentTime = 0; updateSeekUI(); });
-
-var seeking = false;
-seek.addEventListener('input', function(){
-  seeking = true;
-  var dur = audio.duration || 0;
-  var t = (seek.value/1000)*dur;
-  tElapsed.textContent = fmt(t);
-  tRemaining.textContent = '-' + fmt(dur - t);
-  seek.style.setProperty('--pct', (dur ? t/dur*100 : 0)+'%');
-});
-seek.addEventListener('change', function(){
-  var dur = audio.duration || 0;
-  audio.currentTime = (seek.value/1000)*dur;
-  seeking = false;
-});
-
-// ─── Web Audio graph: source -> 8-band EQ -> analyser -> destination ──────
-var audioCtx, srcNode, analyser, gainNode, eqFilters = [], graphReady = false;
-var EQ_BANDS = ${safeScriptJson(EQ_BANDS_HZ)};
-
-function ensureAudioGraph(){
-  if (graphReady) { if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume(); return; }
-  try {
-    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-    srcNode = audioCtx.createMediaElementSource(audio);
-
-    eqFilters = EQ_BANDS.map(function(freq, i){
-      var f = audioCtx.createBiquadFilter();
-      f.type = 'peaking';
-      f.frequency.value = freq;
-      f.Q.value = 1.1;
-      f.gain.value = 0;
-      return f;
-    });
-
-    // Gain node sits after the EQ so the volume slider can go past 100%
-    // (native audio.volume caps at 1.0 — this is the only way to boost).
-    gainNode = audioCtx.createGain();
-    gainNode.gain.value = currentVolume;
-
-    analyser = audioCtx.createAnalyser();
-    analyser.fftSize = 512;
-    analyser.smoothingTimeConstant = 0.75;
-
-    var node = srcNode;
-    eqFilters.forEach(function(f){ node.connect(f); node = f; });
-    node.connect(gainNode);
-    gainNode.connect(analyser);
-    analyser.connect(audioCtx.destination);
-
-    // Some browsers still hand back a 'suspended' context even inside a
-    // user-gesture click handler — explicitly kick it awake.
-    if (audioCtx.state === 'suspended') audioCtx.resume();
-
-    graphReady = true;
-  } catch (err) {
-    // If this fails (blocked autoplay policy, odd browser, etc.) playback
-    // itself must still work — just without visualizer/EQ/volume-boost.
-    // Below-100% volume still works via audio.volume in applyVolume().
-    console.error('[TVFS Audio Player] Web Audio graph setup failed — playback will continue, but the visualizer/EQ/volume-boost won\\'t react:', err);
-    analyser = null;
-    graphReady = false;
-  }
-}
-
-// ─── Volume / mute ──────────────────────────────────────────────────────
-// currentVolume is 0..2 (0%..200%). Native <audio>.volume only covers
-// 0..1, so above 1.0 we lean on the gain node above; below/at 1.0 we set
-// both, so volume still works even if the Web Audio graph never spins up.
-var vol = document.getElementById('vol');
-var volPct = document.getElementById('volPct');
-var btnMute = document.getElementById('btnMute');
-var ICON_VOLUME = ${safeScriptJson(ICONS.volume)};
-var ICON_MUTE = ${safeScriptJson(ICONS.mute)};
-var currentVolume = 1;
-var volumeBeforeMute = 1;
-
-function applyVolume(v){
-  currentVolume = Math.max(0, Math.min(2, v));
-  audio.volume = Math.min(currentVolume, 1);
-  if (gainNode) gainNode.gain.value = currentVolume;
-  vol.value = Math.round(currentVolume * 100);
-  vol.style.setProperty('--vpct', (currentVolume / 2 * 100) + '%');
-  volPct.textContent = Math.round(currentVolume * 100) + '%';
-  var muted = currentVolume === 0;
-  btnMute.classList.toggle('is-muted', muted);
-  btnMute.innerHTML = muted ? ICON_MUTE : ICON_VOLUME;
-}
-applyVolume(1);
-
-vol.addEventListener('input', function(){
-  applyVolume(vol.value / 100);
-});
-
-btnMute.addEventListener('click', function(){
-  if (currentVolume > 0) {
-    volumeBeforeMute = currentVolume;
-    applyVolume(0);
-  } else {
-    applyVolume(volumeBeforeMute || 1);
-  }
-});
-
-${SPEED_JS}
-// ─── Visualizer on/off toggle ──────────────────────────────────────────
-var btnVis = document.getElementById('btnVis');
-var visualizerOn = true;
-btnVis.addEventListener('click', function(){
-  visualizerOn = !visualizerOn;
-  btnVis.classList.toggle('is-off', !visualizerOn);
-  if (!visualizerOn) {
-    waves = []; // clean slate so it doesn't jump back mid-animation on re-enable
-    ctx.clearRect(0, 0, W, H);
-  }
-});
-
-// ─── EQ popup: 8 draggable nodes, Fruity-EQ-2 style ────────────────────────
-var eqOverlay = document.getElementById('eqOverlay');
-var eqSvg = document.getElementById('eqSvg');
-var eqTooltip = document.getElementById('eqTooltip');
-var eqWrap = document.querySelector('.eq-canvas-wrap');
-var VBW = 400, VBH = 290, PAD = 20, PAD_TOP = 16, PAD_BOTTOM = 34;
-var nodes = [];
-
-function freqToX(freq){
-  var minF = 20, maxF = 20000;
-  var lx = (Math.log(freq)-Math.log(minF))/(Math.log(maxF)-Math.log(minF));
-  return PAD + lx*(VBW-PAD*2);
-}
-function xToFreq(x){
-  var minF = 20, maxF = 20000;
-  var lx = (x-PAD)/(VBW-PAD*2);
-  lx = Math.max(0, Math.min(1, lx));
-  return Math.exp(Math.log(minF) + lx*(Math.log(maxF)-Math.log(minF)));
-}
-function gainToY(gain){ // gain range -15..15
-  var t = (gain+15)/30;
-  return (VBH-PAD_BOTTOM) - t*((VBH-PAD_BOTTOM)-PAD_TOP);
-}
-function yToGain(y){
-  var t = ((VBH-PAD_BOTTOM)-y)/((VBH-PAD_BOTTOM)-PAD_TOP);
-  t = Math.max(0, Math.min(1, t));
-  return t*30-15;
-}
-function fmtFreq(f){
-  return f>=1000 ? (Math.round(f/100)/10)+'k' : Math.round(f)+'Hz';
-}
-function fmtGain(g){
-  var r = Math.round(g*10)/10;
-  return (r>0?'+':'')+r+'dB';
-}
-
-// Catmull-Rom -> cubic bezier, so the response curve reads like a taut
-// string between the pegs instead of a stiff polyline.
-function splinePath(pts){
-  if (pts.length < 2) return '';
-  var d = 'M'+pts[0].x+','+pts[0].y;
-  for (var i=0; i<pts.length-1; i++){
-    var p0 = pts[i-1] || pts[i];
-    var p1 = pts[i];
-    var p2 = pts[i+1];
-    var p3 = pts[i+2] || p2;
-    var c1x = p1.x + (p2.x - p0.x)/6;
-    var c1y = p1.y + (p2.y - p0.y)/6;
-    var c2x = p2.x - (p3.x - p1.x)/6;
-    var c2y = p2.y - (p3.y - p1.y)/6;
-    d += ' C'+c1x+','+c1y+' '+c2x+','+c2y+' '+p2.x+','+p2.y;
-  }
-  return d;
-}
-
-function buildEqSvg(){
-  eqSvg.setAttribute('viewBox','0 0 '+VBW+' '+VBH);
-  eqSvg.innerHTML = '';
-  var ns = 'http://www.w3.org/2000/svg';
-
-  // gridlines (gain)
-  var grid = document.createElementNS(ns,'g');
-  [0.25,0.5,0.75].forEach(function(t){
-    var y = PAD_TOP + t*((VBH-PAD_BOTTOM)-PAD_TOP);
-    var line = document.createElementNS(ns,'line');
-    line.setAttribute('x1',PAD); line.setAttribute('x2',VBW-PAD);
-    line.setAttribute('y1',y); line.setAttribute('y2',y);
-    line.setAttribute('stroke','rgba(255,255,255,.08)'); line.setAttribute('stroke-width','1');
-    grid.appendChild(line);
-  });
-  var zero = document.createElementNS(ns,'line');
-  zero.setAttribute('x1',PAD); zero.setAttribute('x2',VBW-PAD);
-  zero.setAttribute('y1',gainToY(0)); zero.setAttribute('y2',gainToY(0));
-  zero.setAttribute('stroke','rgba(47,255,196,.35)'); zero.setAttribute('stroke-width','1.2');
-  grid.appendChild(zero);
-  eqSvg.appendChild(grid);
-
-  // static frequency axis labels along the bottom
-  var axis = document.createElementNS(ns,'g');
-  EQ_BANDS.forEach(function(freq){
-    var t = document.createElementNS(ns,'text');
-    t.textContent = fmtFreq(freq);
-    t.setAttribute('x', freqToX(freq));
-    t.setAttribute('y', VBH-14);
-    t.setAttribute('text-anchor','middle');
-    t.setAttribute('fill','rgba(255,255,255,.4)');
-    t.setAttribute('font-size','10');
-    t.setAttribute('font-family','JetBrains Mono, monospace');
-    axis.appendChild(t);
-  });
-  eqSvg.appendChild(axis);
-
-  // response curve — smooth spline "string" through the nodes
-  var defs = document.createElementNS(ns,'defs');
-  defs.innerHTML = '<linearGradient id="eqGrad" x1="0" y1="0" x2="1" y2="0">'+
-    '<stop offset="0%" stop-color="#2fffc4"/><stop offset="100%" stop-color="#7c4dff"/></linearGradient>';
-  eqSvg.appendChild(defs);
-
-  var curveGlow = document.createElementNS(ns,'path');
-  curveGlow.setAttribute('fill','none');
-  curveGlow.setAttribute('stroke','url(#eqGrad)');
-  curveGlow.setAttribute('stroke-width','7');
-  curveGlow.setAttribute('opacity','0.18');
-  curveGlow.setAttribute('id','eqCurveGlow');
-  eqSvg.appendChild(curveGlow);
-
-  var curve = document.createElementNS(ns,'path');
-  curve.setAttribute('fill','none');
-  curve.setAttribute('stroke','url(#eqGrad)');
-  curve.setAttribute('stroke-width','2.4');
-  curve.setAttribute('id','eqCurve');
-  eqSvg.appendChild(curve);
-
-  nodes = EQ_BANDS.map(function(freq, i){
-    var g = document.createElementNS(ns,'g');
-    g.setAttribute('class','eq-node');
-    var circ = document.createElementNS(ns,'circle');
-    circ.setAttribute('r','9');
-    circ.setAttribute('fill', i%2 ? '#7c4dff' : '#2fffc4');
-    circ.setAttribute('stroke','#0a0a0a');
-    circ.setAttribute('stroke-width','2');
-    var label = document.createElementNS(ns,'text');
-    label.textContent = String(i+1);
-    label.setAttribute('text-anchor','middle');
-    label.setAttribute('dy','4');
-    label.setAttribute('fill','#0a0a0a');
-    label.setAttribute('font-size','9');
-    label.setAttribute('font-weight','700');
-    label.setAttribute('font-family','JetBrains Mono, monospace');
-    label.setAttribute('pointer-events','none');
-    g.appendChild(circ);
-    g.appendChild(label);
-    eqSvg.appendChild(g);
-    return { freq: freq, gain: 0, el: g, circ: circ, label: label, baseFreq: freq, vy: 0 };
-  });
-
-  updateEqVisual();
-  attachDrag();
-}
-
-function curvePoints(){
-  return nodes.map(function(n){ return { x: freqToX(n.freq), y: gainToY(n.gain) }; });
-}
-
-function updateEqVisual(){
-  nodes.forEach(function(n){
-    var x = freqToX(n.freq), y = gainToY(n.gain);
-    n.el.setAttribute('transform','translate('+x+','+y+')');
-  });
-  var d = splinePath(curvePoints());
-  var curve = document.getElementById('eqCurve');
-  var glow = document.getElementById('eqCurveGlow');
-  if (curve) curve.setAttribute('d', d);
-  if (glow) glow.setAttribute('d', d);
-  nodes.forEach(function(n, i){
-    var f = eqFilters[i];
-    if (!f || !audioCtx) return;
-    // Scheduled ramps instead of raw ".value =" — plain value assignment on
-    // an AudioParam of a node that's actively processing audio can get
-    // coalesced/dropped by some browsers during fast successive updates
-    // (exactly what a drag gesture produces). A short ramp guarantees each
-    // change actually lands, and dodges any audible clicking too.
-    var now = audioCtx.currentTime;
-    try {
-      f.frequency.cancelScheduledValues(now);
-      f.frequency.setValueAtTime(f.frequency.value, now);
-      f.frequency.linearRampToValueAtTime(n.freq, now + 0.045);
-      f.gain.cancelScheduledValues(now);
-      f.gain.setValueAtTime(f.gain.value, now);
-      f.gain.linearRampToValueAtTime(n.gain, now + 0.045);
-    } catch (e) {
-      // Fallback for older engines without full AudioParam automation support
-      f.frequency.value = n.freq;
-      f.gain.value = n.gain;
-    }
-  });
-}
-
-function showTooltip(node){
-  var x = freqToX(node.freq), y = gainToY(node.gain);
-  var rect = eqWrap.getBoundingClientRect();
-  eqTooltip.textContent = fmtFreq(node.freq) + '  ' + fmtGain(node.gain);
-  eqTooltip.style.left = (x/VBW*rect.width) + 'px';
-  eqTooltip.style.top = (y/VBH*rect.height) + 'px';
-  eqTooltip.classList.add('show');
-}
-function hideTooltip(){ eqTooltip.classList.remove('show'); }
-
-// Little spring "pluck" settle when a node is released — slight overshoot
-// past the resting gain, like letting go of a stretched EQ string.
-function springSettle(node){
-  var target = node.gain;
-  var v = node.vy || (node._lastDelta || 0) * 0.6;
-  var pos = target - v;
-  var stiffness = 0.35, damping = 0.62;
-  var frames = 0;
-  function step(){
-    frames++;
-    var force = (target - pos) * stiffness;
-    v = v * damping + force;
-    pos += v;
-    node.gain = pos;
-    updateEqVisual();
-    if (Math.abs(v) > 0.02 && frames < 60){
-      requestAnimationFrame(step);
-    } else {
-      node.gain = target;
-      updateEqVisual();
-    }
-  }
-  requestAnimationFrame(step);
-}
-
-function attachDrag(){
-  var active = null, lastGain = 0;
-  function ptFromEvent(evt){
-    var rect = eqSvg.getBoundingClientRect();
-    var cx = (evt.touches ? evt.touches[0].clientX : evt.clientX) - rect.left;
-    var cy = (evt.touches ? evt.touches[0].clientY : evt.clientY) - rect.top;
-    return { x: cx/rect.width*VBW, y: cy/rect.height*VBH };
-  }
-  nodes.forEach(function(n){
-    var start = function(evt){
-      evt.preventDefault();
-      ensureAudioGraph();
-      active = n;
-      lastGain = n.gain;
-      showTooltip(n);
-    };
-    n.el.addEventListener('mousedown', start);
-    n.el.addEventListener('touchstart', start, { passive:false });
-  });
-  function move(evt){
-    if (!active) return;
-    evt.preventDefault();
-    var p = ptFromEvent(evt);
-    var i = nodes.indexOf(active);
-    var lo = i===0 ? 20 : nodes[i-1].baseFreq*1.15;
-    var hi = i===nodes.length-1 ? 20000 : nodes[i+1].baseFreq*0.87;
-    var freq = Math.max(lo, Math.min(hi, xToFreq(p.x)));
-    var newGain = yToGain(p.y);
-    active._lastDelta = newGain - active.gain;
-    active.freq = freq;
-    active.gain = newGain;
-    updateEqVisual();
-    showTooltip(active);
-  }
-  function end(){
-    if (active) springSettle(active);
-    active = null;
-    hideTooltip();
-  }
-  window.addEventListener('mousemove', move);
-  window.addEventListener('touchmove', move, { passive:false });
-  window.addEventListener('mouseup', end);
-  window.addEventListener('touchend', end);
-}
-
-document.getElementById('btnEq').addEventListener('click', function(){
-  ensureAudioGraph();
-  if (!nodes.length) buildEqSvg();
-  eqOverlay.classList.add('open');
-});
-document.getElementById('eqClose').addEventListener('click', function(){ eqOverlay.classList.remove('open'); });
-eqOverlay.addEventListener('click', function(e){ if (e.target === eqOverlay) eqOverlay.classList.remove('open'); });
-document.getElementById('eqReset').addEventListener('click', function(){
-  nodes.forEach(function(n){ n.freq = n.baseFreq; n.gain = 0; });
-  updateEqVisual();
-});
-
-// ─── Wave visualizer ────────────────────────────────────────────────────────
-// Turquoise <-> purple (and everything between) rings that spawn on
-// detected beats/transients and expand outward from the card's center at a
-// speed proportional to how strong the hit was. Faster rings naturally
-// overtake slower older ones — that IS the "collision" the physical
-// propagation gives you for free. Runs continuously, playing or paused,
-// so the page never goes visually dead.
-var waves = [];
-var W, H, cx, cy, maxReach, screenScale;
-function resize(){
-  W = canvas.width = window.innerWidth * devicePixelRatio;
-  H = canvas.height = window.innerHeight * devicePixelRatio;
-  canvas.style.width = window.innerWidth+'px';
-  canvas.style.height = window.innerHeight+'px';
-  cx = W/2; cy = H*0.4;
-  maxReach = Math.sqrt(W*W + H*H) * 0.62; // reaches well past the edges, esp. on wide desktop screens
-  screenScale = Math.max(1, Math.min(window.innerWidth, window.innerHeight) / 700);
-}
-window.addEventListener('resize', resize);
-resize();
-
-var prevLowEnergy = 0;
-var fluxAvg = 0.015;
-var bpmHint = TRACK_BPM || 110;
-// Faster BPM tracks => quicker beat cadence => rings must be allowed to
-// spawn more often, and travel a bit faster to match the felt tempo.
-// Playback speed scales the felt tempo as well (see applySpeed).
-function beatCooldownMs(){ return Math.max(140, 60000 / bpmHint * 0.65 / currentSpeed); }
-var spawnCooldownMs = beatCooldownMs();
-var lastSpawn = 0;
-var huePhase = Math.random()*360;
-
-function spawnWave(strength, opts){
-  opts = opts || {};
-  huePhase = (huePhase + 18 + Math.random()*40) % 360;
-  // Wide, lively palette: sweeps across turquoise -> violet -> magenta and
-  // back, instead of sitting in one narrow band.
-  var hue = 150 + (Math.sin(huePhase*Math.PI/180)*0.5+0.5) * 160; // ~150..310
-  waves.push({
-    r: 4 * devicePixelRatio,
-    speed: (2.6 + strength*13) * devicePixelRatio * screenScale,
-    alpha: Math.min(0.75, 0.24 + strength*0.62),
-    width: (1.6 + strength*5.5) * devicePixelRatio,
-    hue: hue,
-    sat: 90 + Math.random()*10,
-    light: 58 + Math.random()*14
-  });
-  if (waves.length > 70) waves.shift();
-
-  // Strong hits get a fast inner echo ring chasing the first one — the
-  // "collision" reads much more clearly with two rings of different speed.
-  if (strength > 0.35 && !opts.isEcho){
-    setTimeout(function(){ spawnWave(strength*0.6, { isEcho:true }); }, 70);
-  }
-}
-
-var freqData = new Uint8Array(256);
-
-function tick(){
-  requestAnimationFrame(tick);
-  ctx.clearRect(0,0,W,H);
-  if (!visualizerOn) return;
-
-  var now = performance.now();
-  var playing = analyser && !audio.paused;
-
-  if (playing){
-    analyser.getByteFrequencyData(freqData);
-    // low-band energy = kick/bass-driven signal
-    var lowSum = 0, n = Math.floor(freqData.length*0.18);
-    for (var i=0;i<n;i++) lowSum += freqData[i];
-    var lowEnergy = lowSum / (n*255);
-
-    // Spectral-flux onset detection: react to how much LOUDER things just
-    // got (positive-only delta), not to absolute loudness. A plain
-    // "current vs. running average of loudness itself" comparison self-
-    // defeats on sustained bass — the average catches up to match the
-    // beat's own level within a couple of hits and then nothing ever
-    // clears the threshold again (which was exactly the "one wave and then
-    // silence" bug). Flux stays near zero between hits regardless of how
-    // loud the track is, so every new transient still stands out cleanly.
-    var flux = Math.max(0, lowEnergy - prevLowEnergy);
-    prevLowEnergy = lowEnergy;
-    fluxAvg = fluxAvg*0.94 + flux*0.06;
-
-    if (flux > fluxAvg*2.1 + 0.012 && now - lastSpawn > spawnCooldownMs){
-      spawnWave(Math.min(1, flux*9));
-      lastSpawn = now;
-    }
-  } else {
-    prevLowEnergy = 0;
-  }
-  // No sound -> no waves. Paused/silent means the canvas just lets whatever
-  // rings are already in flight finish fading out, nothing new spawns.
-
-  for (var w=waves.length-1; w>=0; w--){
-    var wv = waves[w];
-    wv.r += wv.speed;
-    wv.alpha *= 0.982;
-    if (wv.alpha < 0.008 || wv.r > maxReach){ waves.splice(w,1); continue; }
-
-    ctx.beginPath();
-    ctx.arc(cx, cy, wv.r, 0, Math.PI*2);
-    ctx.strokeStyle = 'hsla('+wv.hue+','+wv.sat+'%,'+wv.light+'%,'+wv.alpha+')';
-    ctx.lineWidth = wv.width;
-    ctx.shadowColor = 'hsla('+wv.hue+',95%,62%,0.75)';
-    ctx.shadowBlur = 18*devicePixelRatio;
-    ctx.stroke();
-
-    // faint inner glow fill for richness on the freshest, strongest rings
-    if (wv.alpha > 0.3){
-      ctx.beginPath();
-      ctx.arc(cx, cy, wv.r, 0, Math.PI*2);
-      ctx.strokeStyle = 'hsla('+wv.hue+',100%,80%,'+(wv.alpha*0.35)+')';
-      ctx.lineWidth = wv.width*2.4;
-      ctx.shadowBlur = 0;
-      ctx.stroke();
-    }
-  }
-}
-requestAnimationFrame(tick);
-
-})();
-</script>
-</body>
-
-</html>`;
-}
-
-function generateProtectedAudioPlayerHtml(audioUrl, originalName, meta, shareId, landingUrl) {
-    const font = fontForBpm(meta.bpm);
-    const durationLabel = formatDuration(meta.durationSec);
-    const metaBits = formatMetaSummary(meta);
-    const resolvedLandingUrl = landingUrl; // always present — every protected player belongs to a share
-
-    return `<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-<meta name="theme-color" content="#0a0a0a">
-<title>${escapeHtml(originalName)} — TVFS Users Only Audio Player</title>
-<link rel="stylesheet" href="${FONTS_CSS_URL}">
-<style>
-*,*::before,*::after{box-sizing:border-box;}
-:root{
-  --bg:#0a0a0a; --fg:#eee; --muted:#9a9a9a; --border:rgba(255,255,255,.14);
-  --accent:#2fffc4; --accent2:#7c4dff;
-  --glass:rgba(255,255,255,.06); --glass-strong:rgba(20,20,24,.55);
-  --track-font:${font.stack};
-}
-html,body{height:100%;}
-body{
-  margin:0; background:var(--bg); color:var(--fg); overflow-x:hidden;
-  font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
-  min-height:100vh; display:flex; flex-direction:column; align-items:center;
-  position:relative;
-}
-#waveCanvas{position:fixed; inset:0; width:100%; height:100%; z-index:0; pointer-events:none;}
-
-.topbar{position:relative; z-index:2; width:100%; text-align:center; padding:28px 20px 6px;}
-.topbar a.back{position:absolute; left:20px; top:30px; color:var(--muted); display:inline-flex; width:20px; height:20px;}
-.topbar a.back svg{width:100%;height:100%;}
-.topbar h1{margin:0; font-size:1rem; letter-spacing:.14em; text-transform:uppercase; font-weight:700; color:var(--muted);}
-.topbar h1 span{color:var(--accent);}
-
-.stage{position:relative; z-index:2; flex:1; width:100%; display:flex; align-items:center; justify-content:center; padding:24px 16px 60px;}
-
-.card{
-  width:100%; max-width:460px;
-  background:var(--glass);
-  border:1px solid var(--border);
-  border-radius:26px;
-  backdrop-filter:blur(22px) saturate(140%);
-  -webkit-backdrop-filter:blur(22px) saturate(140%);
-  box-shadow:0 20px 60px rgba(0,0,0,.5), inset 0 1px 0 rgba(255,255,255,.08);
-  padding:30px 26px 26px;
-  display:flex; flex-direction:column; align-items:center; gap:20px;
-}
-
-.disc{
-  width:120px; height:120px; border-radius:50%;
-  background:conic-gradient(from 180deg, var(--accent), var(--accent2), var(--accent));
-  display:flex; align-items:center; justify-content:center;
-  box-shadow:0 8px 30px rgba(124,77,255,.35), inset 0 0 0 6px rgba(10,10,10,.85);
-  position:relative;
-}
-.disc::after{content:'';position:absolute;width:16px;height:16px;border-radius:50%;background:#0a0a0a;box-shadow:inset 0 0 0 2px rgba(255,255,255,.15);}
-.disc.spinning{animation:spin 6s linear infinite;}
-@keyframes spin{to{transform:rotate(360deg);}}
-
-${MARQUEE_CSS}
-
-.seekwrap{width:100%; display:flex; flex-direction:column; gap:6px;}
-.seek{
-  -webkit-appearance:none; appearance:none; width:100%; height:6px; border-radius:99px;
-  background:linear-gradient(90deg, var(--accent) 0%, var(--accent) var(--pct,0%), rgba(255,255,255,.12) var(--pct,0%));
-  cursor:pointer; outline:none;
-}
-.seek::-webkit-slider-thumb{-webkit-appearance:none; width:15px; height:15px; border-radius:50%; background:#fff; box-shadow:0 0 0 4px rgba(47,255,196,.25); cursor:grab;}
-.seek::-moz-range-thumb{width:15px; height:15px; border-radius:50%; background:#fff; border:none; box-shadow:0 0 0 4px rgba(47,255,196,.25); cursor:grab;}
-.times{display:flex; justify-content:space-between; font-size:.72rem; color:var(--muted); font-family:'JetBrains Mono',monospace;}
-
-.controls{display:flex; align-items:center; justify-content:center; gap:18px;}
-.ctrl-btn{
-  background:var(--glass); border:1px solid var(--border); color:var(--fg);
-  width:44px; height:44px; border-radius:50%; display:flex; align-items:center; justify-content:center;
-  cursor:pointer; transition:all .15s;
-}
-.ctrl-btn svg{width:18px; height:18px;}
-.ctrl-btn:hover{border-color:var(--accent); color:var(--accent); background:rgba(47,255,196,.1);}
-.ctrl-btn.primary{width:58px; height:58px; background:linear-gradient(135deg,var(--accent),var(--accent2)); color:#0a0a0a; border:none;}
-.ctrl-btn.primary svg{width:22px; height:22px;}
-.ctrl-btn.primary:hover{filter:brightness(1.12); color:#0a0a0a;}
-
-.rowbtns{display:flex; gap:10px; width:100%;}
-.pill{
-  flex:1; display:flex; align-items:center; justify-content:center; gap:7px;
-  padding:11px 14px; border-radius:14px; background:var(--glass); border:1px solid var(--border);
-  color:var(--fg); font-size:.78rem; font-weight:700; cursor:pointer; text-decoration:none; transition:all .15s;
-}
-.pill svg{width:15px; height:15px;}
-.pill:hover{border-color:var(--accent); color:var(--accent); background:rgba(47,255,196,.08);}
-
-.volwrap{width:100%; display:flex; align-items:center; gap:10px;}
-.vol-mute{
-  flex:0 0 auto; width:30px; height:30px; border-radius:50%; background:var(--glass); border:1px solid var(--border);
-  color:var(--muted); display:flex; align-items:center; justify-content:center; cursor:pointer; transition:all .15s;
-}
-.vol-mute svg{width:15px; height:15px;}
-.vol-mute:hover{color:var(--accent); border-color:var(--accent);}
-.vol-mute.is-muted{color:var(--accent2); border-color:var(--accent2);}
-.vol-slider{
-  -webkit-appearance:none; appearance:none; flex:1; height:6px; border-radius:99px;
-  background:linear-gradient(90deg, var(--accent2) 0%, var(--accent2) var(--vpct,50%), rgba(255,255,255,.12) var(--vpct,50%));
-  cursor:pointer; outline:none;
-}
-.vol-slider::-webkit-slider-thumb{-webkit-appearance:none; width:14px; height:14px; border-radius:50%; background:#fff; box-shadow:0 0 0 4px rgba(124,77,255,.28); cursor:grab;}
-.vol-slider::-moz-range-thumb{width:14px; height:14px; border-radius:50%; background:#fff; border:none; box-shadow:0 0 0 4px rgba(124,77,255,.28); cursor:grab;}
-.vol-pct{flex:0 0 auto; width:36px; text-align:right; font-size:.68rem; color:var(--muted); font-family:'JetBrains Mono',monospace;}
-.vis-toggle{
-  flex:0 0 auto; width:30px; height:30px; border-radius:50%; background:var(--glass); border:1px solid var(--border);
-  color:var(--muted); display:flex; align-items:center; justify-content:center; cursor:pointer; transition:all .15s;
-}
-.vis-toggle svg{width:15px; height:15px;}
-.vis-toggle:hover{color:var(--accent); border-color:var(--accent);}
-.vis-toggle.is-off{color:var(--muted); border-color:var(--border); opacity:.45;}
-${SPEED_CSS}
-
-.meta{margin-top:2px; font-size:.66rem; color:var(--muted); font-family:'JetBrains Mono',monospace; text-align:center; letter-spacing:.01em; word-break:break-word;}
-
-/* ─── EQ popup ─── */
-.eq-overlay{position:fixed; inset:0; z-index:10; display:none; align-items:center; justify-content:center; background:rgba(0,0,0,.45); backdrop-filter:blur(3px); padding:16px;}
-.eq-overlay.open{display:flex;}
-.eq-panel{
-  width:100%; max-width:440px; background:var(--glass-strong); border:1px solid var(--border);
-  border-radius:22px; backdrop-filter:blur(30px) saturate(160%); -webkit-backdrop-filter:blur(30px) saturate(160%);
-  box-shadow:0 24px 70px rgba(0,0,0,.6); padding:20px 18px 24px; position:relative;
-}
-.eq-head{display:flex; align-items:center; justify-content:space-between; margin-bottom:10px;}
-.eq-head h2{margin:0; font-size:.85rem; letter-spacing:.06em; text-transform:uppercase; color:var(--muted);}
-.eq-close{width:30px; height:30px; border-radius:50%; background:var(--glass); border:1px solid var(--border); color:var(--fg); display:flex; align-items:center; justify-content:center; cursor:pointer;}
-.eq-close svg{width:13px; height:13px;}
-.eq-close:hover{color:var(--accent); border-color:var(--accent);}
-.eq-canvas-wrap{position:relative; width:100%; aspect-ratio:16/12.5; background:rgba(0,0,0,.35); border:1px solid var(--border); border-radius:14px; overflow:hidden; touch-action:none;}
-#eqSvg{width:100%; height:100%; display:block;}
-.eq-node{cursor:grab;}
-.eq-node:active{cursor:grabbing;}
-.eq-tooltip{
-  position:absolute; pointer-events:none; transform:translate(-50%,-130%);
-  background:rgba(10,10,12,.92); border:1px solid var(--border); border-radius:8px;
-  padding:4px 8px; font-size:.68rem; font-family:'JetBrains Mono',monospace; font-weight:700;
-  color:#fff; white-space:nowrap; opacity:0; transition:opacity .1s; z-index:5;
-}
-.eq-tooltip.show{opacity:1;}
-.eq-reset{margin-top:14px; width:100%; padding:10px; border-radius:12px; background:var(--glass); border:1px solid var(--border); color:var(--muted); font-size:.72rem; font-weight:700; cursor:pointer;}
-.eq-reset:hover{color:var(--accent); border-color:var(--accent);}
-
-/* ─── Login gate (TVFS Users Only) ─── */
-.gate-overlay{position:fixed; inset:0; z-index:20; display:flex; align-items:center; justify-content:center; background:rgba(10,10,10,.86); backdrop-filter:blur(8px); -webkit-backdrop-filter:blur(8px); padding:20px;}
+// ─── TVFS Users Only login gate ─────────────────────────────────────────────
+const GATE_CSS = `
+.gate-overlay{position:fixed; inset:0; z-index:40; display:flex; align-items:center; justify-content:center; background:rgba(3,7,10,.86); backdrop-filter:blur(8px); -webkit-backdrop-filter:blur(8px); padding:20px;}
 .gate-overlay.hidden{display:none;}
-.gate-card{width:100%; max-width:360px; background:var(--glass-strong); border:1px solid var(--border); border-radius:22px; padding:30px 24px; text-align:center; box-shadow:0 24px 70px rgba(0,0,0,.6);}
+.gate-card{width:100%; max-width:360px; background:var(--glass-strong); border:1px solid var(--glass-border); border-radius:20px; padding:30px 24px; text-align:center; box-shadow:var(--shadow-xl);}
 .gate-lock{font-size:2rem; margin-bottom:8px;}
-.gate-card h2{margin:0 0 4px; font-size:.95rem; letter-spacing:.1em; text-transform:uppercase; color:var(--fg); font-weight:700;}
-.gate-card h2 span{color:var(--accent);}
-.gate-sub{color:var(--muted); font-size:.8rem; margin-bottom:18px;}
+.gate-card h2{margin:0 0 4px; font-family:'Space Grotesk','Inter',sans-serif; font-size:1rem; letter-spacing:.08em; text-transform:uppercase; color:var(--text-main);}
+.gate-card h2 span{color:var(--accent-secondary);}
+.gate-sub{color:var(--text-secondary); font-size:.82rem; margin-bottom:18px;}
 .gate-field{text-align:left; margin-bottom:12px;}
-.gate-field label{display:block; font-size:.72rem; color:var(--muted); margin-bottom:5px;}
-.gate-field input{width:100%; padding:10px 11px; border-radius:9px; border:1px solid var(--border); background:rgba(0,0,0,.4); color:var(--fg); font-size:.9rem; box-sizing:border-box;}
-.gate-field input:focus{outline:none; border-color:var(--accent);}
-#gateLoginBtn{width:100%; padding:11px; border-radius:9px; border:none; background:linear-gradient(135deg,var(--accent),var(--accent2)); color:#0a0a0a; font-weight:700; font-size:.86rem; cursor:pointer; margin-top:4px;}
+.gate-field label{display:block; font-size:.7rem; font-weight:600; letter-spacing:.06em; text-transform:uppercase; color:var(--text-secondary); margin-bottom:6px;}
+.gate-field input{width:100%; padding:12px 13px; border-radius:12px; border:1px solid var(--glass-border); background:var(--input-bg); color:var(--text-main); font:inherit; font-size:.9rem;}
+.gate-field input:focus{outline:none; border-color:var(--accent-primary); box-shadow:0 0 0 3px rgba(176,131,255,.15);}
+#gateLoginBtn{width:100%; padding:12px; border-radius:12px; border:none; background:var(--accent-gradient); color:#04101c; font:inherit; font-weight:700; font-size:.9rem; cursor:pointer; margin-top:4px;}
 #gateLoginBtn:disabled{opacity:.5; cursor:default;}
-.gate-msg{font-size:.76rem; margin-top:10px; min-height:1.1em; color:#ff6b6b;}
-.hidden{display:none !important;}
-
-.stay-overlay{position:fixed; inset:0; background:rgba(10,10,10,.86); backdrop-filter:blur(8px); -webkit-backdrop-filter:blur(8px); display:flex; align-items:center; justify-content:center; z-index:25; opacity:0; pointer-events:none; transition:opacity .15s;}
+.gate-msg{font-size:.78rem; margin-top:10px; min-height:1.1em; color:var(--status-bad);}
+.stay-overlay{position:fixed; inset:0; background:rgba(3,7,10,.86); backdrop-filter:blur(8px); -webkit-backdrop-filter:blur(8px); display:flex; align-items:center; justify-content:center; z-index:45; opacity:0; pointer-events:none; transition:opacity .15s;}
 .stay-overlay.visible{opacity:1; pointer-events:auto;}
-.stay-card{background:var(--glass-strong); border:1px solid var(--border); border-radius:22px; padding:28px 24px; max-width:340px; width:90%; text-align:center; box-shadow:0 24px 70px rgba(0,0,0,.6);}
+.stay-card{background:var(--glass-strong); border:1px solid var(--glass-border); border-radius:20px; padding:28px 24px; max-width:340px; width:90%; text-align:center; box-shadow:var(--shadow-xl);}
 .stay-card h3{margin:0 0 8px; font-size:1rem;}
-.stay-card p{color:var(--muted); font-size:.8rem; margin:0 0 16px;}
-.stay-yes-btn{width:100%; padding:11px; border-radius:9px; border:none; background:linear-gradient(135deg,var(--accent),var(--accent2)); color:#0a0a0a; font-weight:700; font-size:.86rem; cursor:pointer; margin-bottom:8px;}
-.stay-no-btn{width:100%; padding:10px; border-radius:9px; border:1px solid var(--border); background:transparent; color:var(--muted); font-size:.8rem; cursor:pointer;}
-@media (max-width:520px){
-  .card{padding:24px 18px 20px; border-radius:22px;}
-  .disc{width:96px; height:96px;}
-  .ctrl-btn{width:40px; height:40px;}
-  .ctrl-btn.primary{width:52px; height:52px;}
-}
-</style>
-</head>
-<body>
-<canvas id="waveCanvas"></canvas>
+.stay-card p{color:var(--text-secondary); font-size:.82rem; margin:0 0 16px;}
+.stay-yes-btn{width:100%; padding:12px; border-radius:12px; border:none; background:var(--accent-gradient); color:#04101c; font:inherit; font-weight:700; font-size:.88rem; cursor:pointer; margin-bottom:8px;}
+.stay-no-btn{width:100%; padding:11px; border-radius:12px; border:1px solid var(--glass-border); background:transparent; color:var(--text-secondary); font:inherit; font-size:.82rem; cursor:pointer;}`;
 
-<div class="topbar">
-  <a class="back" href="${escapeHtml(resolvedLandingUrl)}" title="Back"></a>
-  <h1>TVFS Users Only <span>Audio Player</span></h1>
-</div>
-
-<div class="stage">
-  <div class="card">
-    <div class="disc" id="disc"></div>
-    <div class="title" id="title"><span class="mq-inner" id="titleInner">${escapeHtml(originalName.replace(/\.[^./]+$/, ''))}</span></div>
-
-    <div class="seekwrap">
-      <input type="range" class="seek" id="seek" min="0" max="1000" value="0">
-      <div class="times">
-        <span id="tElapsed">0:00</span>
-        <span id="tRemaining">${durationLabel ? '-' + durationLabel : '-0:00'}</span>
-      </div>
-    </div>
-
-    <div class="controls">
-      <button class="vol-mute" id="btnMute" title="Mute">${ICONS.volume}</button>
-      <button class="ctrl-btn" id="btnRestart" title="Back to start">${ICONS.restart}</button>
-      <button class="ctrl-btn primary" id="btnPlay" title="Play / Pause">${ICONS.play}</button>
-      <button class="ctrl-btn" id="btnStop" title="Stop">${ICONS.stop}</button>
-      <button class="vis-toggle" id="btnVis" title="Toggle visualizer">${ICONS.disc}</button>
-    </div>
-
-    <div class="rowbtns">
-      <a class="pill" id="btnDownload" download title="Download original file">${ICONS.download}<span>Download</span></a>
-      <button class="pill" id="btnEq" title="Open EQ">${ICONS.eq}<span>EQ</span></button>
-    </div>
-
-    <div class="volwrap">
-      <input type="range" class="vol-slider" id="vol" min="0" max="200" value="100">
-      <span class="vol-pct" id="volPct">100%</span>
-    </div>
-${SPEED_HTML}
-
-    <div class="meta">${escapeHtml(metaBits)}</div>
-  </div>
-</div>
-
-<div class="eq-overlay" id="eqOverlay">
-  <div class="eq-panel">
-    <div class="eq-head">
-      <h2>8-Band EQ</h2>
-      <button class="eq-close" id="eqClose">${ICONS.close}</button>
-    </div>
-    <div class="eq-canvas-wrap">
-      <svg id="eqSvg" viewBox="0 0 400 290" preserveAspectRatio="none"></svg>
-      <div class="eq-tooltip" id="eqTooltip"></div>
-    </div>
-    <button class="eq-reset" id="eqReset">Reset all bands</button>
-  </div>
-</div>
-
+const GATE_HTML = `
 <div class="gate-overlay" id="gateOverlay">
   <div class="gate-card">
     <div class="gate-lock">🔒</div>
@@ -1331,33 +175,15 @@ ${SPEED_HTML}
     <button class="stay-yes-btn" id="stayYesBtn">Yes, stay logged in</button>
     <button class="stay-no-btn" id="stayNoBtn">No, just this session</button>
   </div>
-</div>
+</div>`;
 
-<audio id="audio" preload="metadata"></audio>
-
-<script>
-(function(){
-'use strict';
-var audio = document.getElementById('audio');
-var btnPlay = document.getElementById('btnPlay');
-var btnRestart = document.getElementById('btnRestart');
-var btnStop = document.getElementById('btnStop');
-var btnDownload = document.getElementById('btnDownload');
-var seek = document.getElementById('seek');
-var tElapsed = document.getElementById('tElapsed');
-var tRemaining = document.getElementById('tRemaining');
-var disc = document.getElementById('disc');
-var canvas = document.getElementById('waveCanvas');
-var ctx = canvas.getContext('2d');
-
-var AUDIO_URL = ${safeScriptJson(audioUrl)};
-var TRACK_BPM = ${safeScriptJson(meta.bpm)};
-
-// ─── Login gate (2026-08) ───────────────────────────────────────────────
 // No audio byte is requested until this succeeds. Auth is the exact same
 // tvfs_token session cookie the rest of the site uses (checked via
-// /api/protected/{shareId}/login), never a token in this page's URL — a
-// bare link to this player is worthless without an actual TVFS login.
+// /api/protected/{shareId}/login), never a token in this page's URL.
+function gateJs(shareId) {
+    return `
+(function(){
+'use strict';
 var GATE_API = '/api/protected/' + ${safeScriptJson(shareId)};
 var gateOverlay = document.getElementById('gateOverlay');
 var gateSub = document.getElementById('gateSub');
@@ -1370,8 +196,7 @@ var stayOverlay = document.getElementById('stayOverlay');
 
 function revealPlayer(){
   gateOverlay.classList.add('hidden');
-  audio.src = AUDIO_URL;
-  btnDownload.href = AUDIO_URL;
+  window.TVFSPlayer.setSource(window.TVFS_PLAYER.audioUrl);
 }
 
 function showGateForm(msg){
@@ -1431,554 +256,130 @@ async function rememberLogin(username, password, remember){
 }
 
 silentCheck();
-
-
-var ICON_PLAY = ${safeScriptJson(ICONS.play)};
-var ICON_PAUSE = ${safeScriptJson(ICONS.pause)};
-
-${MARQUEE_JS}
-
-function fmt(s){
-  if(!isFinite(s) || s<0) s=0;
-  var m=Math.floor(s/60), sec=Math.floor(s%60);
-  return m+':'+String(sec).padStart(2,'0');
+})();`;
 }
 
-function updateSeekUI(){
-  var dur = audio.duration || 0;
-  var cur = audio.currentTime || 0;
-  var pct = dur ? (cur/dur*1000) : 0;
-  seek.value = pct;
-  seek.style.setProperty('--pct', (dur ? cur/dur*100 : 0)+'%');
-  tElapsed.textContent = fmt(cur);
-  tRemaining.textContent = '-' + fmt(dur - cur);
-}
-
-audio.addEventListener('loadedmetadata', updateSeekUI);
-audio.addEventListener('timeupdate', updateSeekUI);
-audio.addEventListener('play', function(){ btnPlay.innerHTML = ICON_PAUSE; disc.classList.add('spinning'); });
-audio.addEventListener('pause', function(){ btnPlay.innerHTML = ICON_PLAY; disc.classList.remove('spinning'); });
-audio.addEventListener('ended', function(){ btnPlay.innerHTML = ICON_PLAY; disc.classList.remove('spinning'); });
-
-btnPlay.addEventListener('click', function(){
-  ensureAudioGraph();
-  if (audio.paused) audio.play(); else audio.pause();
-});
-btnRestart.addEventListener('click', function(){ audio.currentTime = 0; updateSeekUI(); });
-btnStop.addEventListener('click', function(){ audio.pause(); audio.currentTime = 0; updateSeekUI(); });
-
-var seeking = false;
-seek.addEventListener('input', function(){
-  seeking = true;
-  var dur = audio.duration || 0;
-  var t = (seek.value/1000)*dur;
-  tElapsed.textContent = fmt(t);
-  tRemaining.textContent = '-' + fmt(dur - t);
-  seek.style.setProperty('--pct', (dur ? t/dur*100 : 0)+'%');
-});
-seek.addEventListener('change', function(){
-  var dur = audio.duration || 0;
-  audio.currentTime = (seek.value/1000)*dur;
-  seeking = false;
-});
-
-// ─── Web Audio graph: source -> 8-band EQ -> analyser -> destination ──────
-var audioCtx, srcNode, analyser, gainNode, eqFilters = [], graphReady = false;
-var EQ_BANDS = ${safeScriptJson(EQ_BANDS_HZ)};
-
-function ensureAudioGraph(){
-  if (graphReady) { if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume(); return; }
-  try {
-    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-    srcNode = audioCtx.createMediaElementSource(audio);
-
-    eqFilters = EQ_BANDS.map(function(freq, i){
-      var f = audioCtx.createBiquadFilter();
-      f.type = 'peaking';
-      f.frequency.value = freq;
-      f.Q.value = 1.1;
-      f.gain.value = 0;
-      return f;
-    });
-
-    // Gain node sits after the EQ so the volume slider can go past 100%
-    // (native audio.volume caps at 1.0 — this is the only way to boost).
-    gainNode = audioCtx.createGain();
-    gainNode.gain.value = currentVolume;
-
-    analyser = audioCtx.createAnalyser();
-    analyser.fftSize = 512;
-    analyser.smoothingTimeConstant = 0.75;
-
-    var node = srcNode;
-    eqFilters.forEach(function(f){ node.connect(f); node = f; });
-    node.connect(gainNode);
-    gainNode.connect(analyser);
-    analyser.connect(audioCtx.destination);
-
-    // Some browsers still hand back a 'suspended' context even inside a
-    // user-gesture click handler — explicitly kick it awake.
-    if (audioCtx.state === 'suspended') audioCtx.resume();
-
-    graphReady = true;
-  } catch (err) {
-    // If this fails (blocked autoplay policy, odd browser, etc.) playback
-    // itself must still work — just without visualizer/EQ/volume-boost.
-    // Below-100% volume still works via audio.volume in applyVolume().
-    console.error('[TVFS Audio Player] Web Audio graph setup failed — playback will continue, but the visualizer/EQ/volume-boost won\\'t react:', err);
-    analyser = null;
-    graphReady = false;
-  }
-}
-
-// ─── Volume / mute ──────────────────────────────────────────────────────
-// currentVolume is 0..2 (0%..200%). Native <audio>.volume only covers
-// 0..1, so above 1.0 we lean on the gain node above; below/at 1.0 we set
-// both, so volume still works even if the Web Audio graph never spins up.
-var vol = document.getElementById('vol');
-var volPct = document.getElementById('volPct');
-var btnMute = document.getElementById('btnMute');
-var ICON_VOLUME = ${safeScriptJson(ICONS.volume)};
-var ICON_MUTE = ${safeScriptJson(ICONS.mute)};
-var currentVolume = 1;
-var volumeBeforeMute = 1;
-
-function applyVolume(v){
-  currentVolume = Math.max(0, Math.min(2, v));
-  audio.volume = Math.min(currentVolume, 1);
-  if (gainNode) gainNode.gain.value = currentVolume;
-  vol.value = Math.round(currentVolume * 100);
-  vol.style.setProperty('--vpct', (currentVolume / 2 * 100) + '%');
-  volPct.textContent = Math.round(currentVolume * 100) + '%';
-  var muted = currentVolume === 0;
-  btnMute.classList.toggle('is-muted', muted);
-  btnMute.innerHTML = muted ? ICON_MUTE : ICON_VOLUME;
-}
-applyVolume(1);
-
-vol.addEventListener('input', function(){
-  applyVolume(vol.value / 100);
-});
-
-btnMute.addEventListener('click', function(){
-  if (currentVolume > 0) {
-    volumeBeforeMute = currentVolume;
-    applyVolume(0);
-  } else {
-    applyVolume(volumeBeforeMute || 1);
-  }
-});
-
-${SPEED_JS}
-// ─── Visualizer on/off toggle ──────────────────────────────────────────
-var btnVis = document.getElementById('btnVis');
-var visualizerOn = true;
-btnVis.addEventListener('click', function(){
-  visualizerOn = !visualizerOn;
-  btnVis.classList.toggle('is-off', !visualizerOn);
-  if (!visualizerOn) {
-    waves = []; // clean slate so it doesn't jump back mid-animation on re-enable
-    ctx.clearRect(0, 0, W, H);
-  }
-});
-
-// ─── EQ popup: 8 draggable nodes, Fruity-EQ-2 style ────────────────────────
-var eqOverlay = document.getElementById('eqOverlay');
-var eqSvg = document.getElementById('eqSvg');
-var eqTooltip = document.getElementById('eqTooltip');
-var eqWrap = document.querySelector('.eq-canvas-wrap');
-var VBW = 400, VBH = 290, PAD = 20, PAD_TOP = 16, PAD_BOTTOM = 34;
-var nodes = [];
-
-function freqToX(freq){
-  var minF = 20, maxF = 20000;
-  var lx = (Math.log(freq)-Math.log(minF))/(Math.log(maxF)-Math.log(minF));
-  return PAD + lx*(VBW-PAD*2);
-}
-function xToFreq(x){
-  var minF = 20, maxF = 20000;
-  var lx = (x-PAD)/(VBW-PAD*2);
-  lx = Math.max(0, Math.min(1, lx));
-  return Math.exp(Math.log(minF) + lx*(Math.log(maxF)-Math.log(minF)));
-}
-function gainToY(gain){ // gain range -15..15
-  var t = (gain+15)/30;
-  return (VBH-PAD_BOTTOM) - t*((VBH-PAD_BOTTOM)-PAD_TOP);
-}
-function yToGain(y){
-  var t = ((VBH-PAD_BOTTOM)-y)/((VBH-PAD_BOTTOM)-PAD_TOP);
-  t = Math.max(0, Math.min(1, t));
-  return t*30-15;
-}
-function fmtFreq(f){
-  return f>=1000 ? (Math.round(f/100)/10)+'k' : Math.round(f)+'Hz';
-}
-function fmtGain(g){
-  var r = Math.round(g*10)/10;
-  return (r>0?'+':'')+r+'dB';
-}
-
-// Catmull-Rom -> cubic bezier, so the response curve reads like a taut
-// string between the pegs instead of a stiff polyline.
-function splinePath(pts){
-  if (pts.length < 2) return '';
-  var d = 'M'+pts[0].x+','+pts[0].y;
-  for (var i=0; i<pts.length-1; i++){
-    var p0 = pts[i-1] || pts[i];
-    var p1 = pts[i];
-    var p2 = pts[i+1];
-    var p3 = pts[i+2] || p2;
-    var c1x = p1.x + (p2.x - p0.x)/6;
-    var c1y = p1.y + (p2.y - p0.y)/6;
-    var c2x = p2.x - (p3.x - p1.x)/6;
-    var c2y = p2.y - (p3.y - p1.y)/6;
-    d += ' C'+c1x+','+c1y+' '+c2x+','+c2y+' '+p2.x+','+p2.y;
-  }
-  return d;
-}
-
-function buildEqSvg(){
-  eqSvg.setAttribute('viewBox','0 0 '+VBW+' '+VBH);
-  eqSvg.innerHTML = '';
-  var ns = 'http://www.w3.org/2000/svg';
-
-  // gridlines (gain)
-  var grid = document.createElementNS(ns,'g');
-  [0.25,0.5,0.75].forEach(function(t){
-    var y = PAD_TOP + t*((VBH-PAD_BOTTOM)-PAD_TOP);
-    var line = document.createElementNS(ns,'line');
-    line.setAttribute('x1',PAD); line.setAttribute('x2',VBW-PAD);
-    line.setAttribute('y1',y); line.setAttribute('y2',y);
-    line.setAttribute('stroke','rgba(255,255,255,.08)'); line.setAttribute('stroke-width','1');
-    grid.appendChild(line);
-  });
-  var zero = document.createElementNS(ns,'line');
-  zero.setAttribute('x1',PAD); zero.setAttribute('x2',VBW-PAD);
-  zero.setAttribute('y1',gainToY(0)); zero.setAttribute('y2',gainToY(0));
-  zero.setAttribute('stroke','rgba(47,255,196,.35)'); zero.setAttribute('stroke-width','1.2');
-  grid.appendChild(zero);
-  eqSvg.appendChild(grid);
-
-  // static frequency axis labels along the bottom
-  var axis = document.createElementNS(ns,'g');
-  EQ_BANDS.forEach(function(freq){
-    var t = document.createElementNS(ns,'text');
-    t.textContent = fmtFreq(freq);
-    t.setAttribute('x', freqToX(freq));
-    t.setAttribute('y', VBH-14);
-    t.setAttribute('text-anchor','middle');
-    t.setAttribute('fill','rgba(255,255,255,.4)');
-    t.setAttribute('font-size','10');
-    t.setAttribute('font-family','JetBrains Mono, monospace');
-    axis.appendChild(t);
-  });
-  eqSvg.appendChild(axis);
-
-  // response curve — smooth spline "string" through the nodes
-  var defs = document.createElementNS(ns,'defs');
-  defs.innerHTML = '<linearGradient id="eqGrad" x1="0" y1="0" x2="1" y2="0">'+
-    '<stop offset="0%" stop-color="#2fffc4"/><stop offset="100%" stop-color="#7c4dff"/></linearGradient>';
-  eqSvg.appendChild(defs);
-
-  var curveGlow = document.createElementNS(ns,'path');
-  curveGlow.setAttribute('fill','none');
-  curveGlow.setAttribute('stroke','url(#eqGrad)');
-  curveGlow.setAttribute('stroke-width','7');
-  curveGlow.setAttribute('opacity','0.18');
-  curveGlow.setAttribute('id','eqCurveGlow');
-  eqSvg.appendChild(curveGlow);
-
-  var curve = document.createElementNS(ns,'path');
-  curve.setAttribute('fill','none');
-  curve.setAttribute('stroke','url(#eqGrad)');
-  curve.setAttribute('stroke-width','2.4');
-  curve.setAttribute('id','eqCurve');
-  eqSvg.appendChild(curve);
-
-  nodes = EQ_BANDS.map(function(freq, i){
-    var g = document.createElementNS(ns,'g');
-    g.setAttribute('class','eq-node');
-    var circ = document.createElementNS(ns,'circle');
-    circ.setAttribute('r','9');
-    circ.setAttribute('fill', i%2 ? '#7c4dff' : '#2fffc4');
-    circ.setAttribute('stroke','#0a0a0a');
-    circ.setAttribute('stroke-width','2');
-    var label = document.createElementNS(ns,'text');
-    label.textContent = String(i+1);
-    label.setAttribute('text-anchor','middle');
-    label.setAttribute('dy','4');
-    label.setAttribute('fill','#0a0a0a');
-    label.setAttribute('font-size','9');
-    label.setAttribute('font-weight','700');
-    label.setAttribute('font-family','JetBrains Mono, monospace');
-    label.setAttribute('pointer-events','none');
-    g.appendChild(circ);
-    g.appendChild(label);
-    eqSvg.appendChild(g);
-    return { freq: freq, gain: 0, el: g, circ: circ, label: label, baseFreq: freq, vy: 0 };
-  });
-
-  updateEqVisual();
-  attachDrag();
-}
-
-function curvePoints(){
-  return nodes.map(function(n){ return { x: freqToX(n.freq), y: gainToY(n.gain) }; });
-}
-
-function updateEqVisual(){
-  nodes.forEach(function(n){
-    var x = freqToX(n.freq), y = gainToY(n.gain);
-    n.el.setAttribute('transform','translate('+x+','+y+')');
-  });
-  var d = splinePath(curvePoints());
-  var curve = document.getElementById('eqCurve');
-  var glow = document.getElementById('eqCurveGlow');
-  if (curve) curve.setAttribute('d', d);
-  if (glow) glow.setAttribute('d', d);
-  nodes.forEach(function(n, i){
-    var f = eqFilters[i];
-    if (!f || !audioCtx) return;
-    // Scheduled ramps instead of raw ".value =" — plain value assignment on
-    // an AudioParam of a node that's actively processing audio can get
-    // coalesced/dropped by some browsers during fast successive updates
-    // (exactly what a drag gesture produces). A short ramp guarantees each
-    // change actually lands, and dodges any audible clicking too.
-    var now = audioCtx.currentTime;
-    try {
-      f.frequency.cancelScheduledValues(now);
-      f.frequency.setValueAtTime(f.frequency.value, now);
-      f.frequency.linearRampToValueAtTime(n.freq, now + 0.045);
-      f.gain.cancelScheduledValues(now);
-      f.gain.setValueAtTime(f.gain.value, now);
-      f.gain.linearRampToValueAtTime(n.gain, now + 0.045);
-    } catch (e) {
-      // Fallback for older engines without full AudioParam automation support
-      f.frequency.value = n.freq;
-      f.gain.value = n.gain;
-    }
-  });
-}
-
-function showTooltip(node){
-  var x = freqToX(node.freq), y = gainToY(node.gain);
-  var rect = eqWrap.getBoundingClientRect();
-  eqTooltip.textContent = fmtFreq(node.freq) + '  ' + fmtGain(node.gain);
-  eqTooltip.style.left = (x/VBW*rect.width) + 'px';
-  eqTooltip.style.top = (y/VBH*rect.height) + 'px';
-  eqTooltip.classList.add('show');
-}
-function hideTooltip(){ eqTooltip.classList.remove('show'); }
-
-// Little spring "pluck" settle when a node is released — slight overshoot
-// past the resting gain, like letting go of a stretched EQ string.
-function springSettle(node){
-  var target = node.gain;
-  var v = node.vy || (node._lastDelta || 0) * 0.6;
-  var pos = target - v;
-  var stiffness = 0.35, damping = 0.62;
-  var frames = 0;
-  function step(){
-    frames++;
-    var force = (target - pos) * stiffness;
-    v = v * damping + force;
-    pos += v;
-    node.gain = pos;
-    updateEqVisual();
-    if (Math.abs(v) > 0.02 && frames < 60){
-      requestAnimationFrame(step);
-    } else {
-      node.gain = target;
-      updateEqVisual();
-    }
-  }
-  requestAnimationFrame(step);
-}
-
-function attachDrag(){
-  var active = null, lastGain = 0;
-  function ptFromEvent(evt){
-    var rect = eqSvg.getBoundingClientRect();
-    var cx = (evt.touches ? evt.touches[0].clientX : evt.clientX) - rect.left;
-    var cy = (evt.touches ? evt.touches[0].clientY : evt.clientY) - rect.top;
-    return { x: cx/rect.width*VBW, y: cy/rect.height*VBH };
-  }
-  nodes.forEach(function(n){
-    var start = function(evt){
-      evt.preventDefault();
-      ensureAudioGraph();
-      active = n;
-      lastGain = n.gain;
-      showTooltip(n);
+// ─── Page template (shared by the public and the TVFS Users Only player) ────
+// opts.share: { shareId } for the gated variant, null for the public one.
+function buildPlayerHtml({ audioUrl, originalName, meta, backUrl, share }) {
+    const font = fontForBpm(meta.bpm);
+    const durationLabel = formatDuration(meta.durationSec);
+    const metaBits = formatMetaSummary(meta);
+    const title = originalName.replace(/\.[^./]+$/, '');
+    const brand = share ? 'TVFS Users Only' : 'TVFS';
+    const CLIENT = client();
+    const cfg = {
+        audioUrl,
+        bpm: meta.bpm || null,
+        lufs: Number.isFinite(meta.lufs) ? meta.lufs : null,
+        gated: !!share,
+        icons: { play: ICONS.play, pause: ICONS.pause, volume: ICONS.volume, mute: ICONS.mute },
     };
-    n.el.addEventListener('mousedown', start);
-    n.el.addEventListener('touchstart', start, { passive:false });
-  });
-  function move(evt){
-    if (!active) return;
-    evt.preventDefault();
-    var p = ptFromEvent(evt);
-    var i = nodes.indexOf(active);
-    var lo = i===0 ? 20 : nodes[i-1].baseFreq*1.15;
-    var hi = i===nodes.length-1 ? 20000 : nodes[i+1].baseFreq*0.87;
-    var freq = Math.max(lo, Math.min(hi, xToFreq(p.x)));
-    var newGain = yToGain(p.y);
-    active._lastDelta = newGain - active.gain;
-    active.freq = freq;
-    active.gain = newGain;
-    updateEqVisual();
-    showTooltip(active);
-  }
-  function end(){
-    if (active) springSettle(active);
-    active = null;
-    hideTooltip();
-  }
-  window.addEventListener('mousemove', move);
-  window.addEventListener('touchmove', move, { passive:false });
-  window.addEventListener('mouseup', end);
-  window.addEventListener('touchend', end);
-}
 
-document.getElementById('btnEq').addEventListener('click', function(){
-  ensureAudioGraph();
-  if (!nodes.length) buildEqSvg();
-  eqOverlay.classList.add('open');
-});
-document.getElementById('eqClose').addEventListener('click', function(){ eqOverlay.classList.remove('open'); });
-eqOverlay.addEventListener('click', function(e){ if (e.target === eqOverlay) eqOverlay.classList.remove('open'); });
-document.getElementById('eqReset').addEventListener('click', function(){
-  nodes.forEach(function(n){ n.freq = n.baseFreq; n.gain = 0; });
-  updateEqVisual();
-});
+    return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="theme-color" content="#03070a">
+<title>${escapeHtml(originalName)} — ${brand} Audio Player</title>
+<link rel="stylesheet" href="${FONTS_CSS_URL}">
+<style>
+:root{ --track-font:${font.stack}; }
+${CLIENT.css}
+${share ? GATE_CSS : ''}
+</style>
+</head>
+<body>
+<canvas id="vis"></canvas>
 
-// ─── Wave visualizer ────────────────────────────────────────────────────────
-// Turquoise <-> purple (and everything between) rings that spawn on
-// detected beats/transients and expand outward from the card's center at a
-// speed proportional to how strong the hit was. Faster rings naturally
-// overtake slower older ones — that IS the "collision" the physical
-// propagation gives you for free. Runs continuously, playing or paused,
-// so the page never goes visually dead.
-var waves = [];
-var W, H, cx, cy, maxReach, screenScale;
-function resize(){
-  W = canvas.width = window.innerWidth * devicePixelRatio;
-  H = canvas.height = window.innerHeight * devicePixelRatio;
-  canvas.style.width = window.innerWidth+'px';
-  canvas.style.height = window.innerHeight+'px';
-  cx = W/2; cy = H*0.4;
-  maxReach = Math.sqrt(W*W + H*H) * 0.62; // reaches well past the edges, esp. on wide desktop screens
-  screenScale = Math.max(1, Math.min(window.innerWidth, window.innerHeight) / 700);
-}
-window.addEventListener('resize', resize);
-resize();
+<header class="topbar">
+  <a class="icon-btn back" href="${escapeHtml(backUrl)}" title="Back">${ICONS.back}</a>
+  <h1>${share ? 'TVFS Users Only' : 'TVFS'} <span>Audio Player</span></h1>
+  <button class="icon-btn" id="btnHelp" title="How to use the player">${ICONS.help}</button>
+</header>
 
-var prevLowEnergy = 0;
-var fluxAvg = 0.015;
-var bpmHint = TRACK_BPM || 110;
-// Faster BPM tracks => quicker beat cadence => rings must be allowed to
-// spawn more often, and travel a bit faster to match the felt tempo.
-// Playback speed scales the felt tempo as well (see applySpeed).
-function beatCooldownMs(){ return Math.max(140, 60000 / bpmHint * 0.65 / currentSpeed); }
-var spawnCooldownMs = beatCooldownMs();
-var lastSpawn = 0;
-var huePhase = Math.random()*360;
+<main class="shell">
+  <section class="glass player" id="playerCard">
+    <div class="disc" id="disc"></div>
+    <div class="title" id="title"><span class="mq-inner" id="titleInner">${escapeHtml(title)}</span></div>
 
-function spawnWave(strength, opts){
-  opts = opts || {};
-  huePhase = (huePhase + 18 + Math.random()*40) % 360;
-  // Wide, lively palette: sweeps across turquoise -> violet -> magenta and
-  // back, instead of sitting in one narrow band.
-  var hue = 150 + (Math.sin(huePhase*Math.PI/180)*0.5+0.5) * 160; // ~150..310
-  waves.push({
-    r: 4 * devicePixelRatio,
-    speed: (2.6 + strength*13) * devicePixelRatio * screenScale,
-    alpha: Math.min(0.75, 0.24 + strength*0.62),
-    width: (1.6 + strength*5.5) * devicePixelRatio,
-    hue: hue,
-    sat: 90 + Math.random()*10,
-    light: 58 + Math.random()*14
-  });
-  if (waves.length > 70) waves.shift();
+    <div class="seekwrap">
+      <input type="range" class="seek" id="seek" min="0" max="1000" value="0" aria-label="Seek">
+      <div class="times">
+        <span id="tElapsed">0:00</span>
+        <span id="tRemaining">${durationLabel ? '-' + durationLabel : '-0:00'}</span>
+      </div>
+    </div>
 
-  // Strong hits get a fast inner echo ring chasing the first one — the
-  // "collision" reads much more clearly with two rings of different speed.
-  if (strength > 0.35 && !opts.isEcho){
-    setTimeout(function(){ spawnWave(strength*0.6, { isEcho:true }); }, 70);
-  }
-}
+    <div class="controls">
+      <button class="icon-btn" id="btnMute" title="Mute">${ICONS.volume}</button>
+      <button class="ctrl-btn" id="btnRestart" title="Back to start">${ICONS.restart}</button>
+      <button class="ctrl-btn primary" id="btnPlay" title="Play / Pause">${ICONS.play}</button>
+      <button class="ctrl-btn" id="btnStop" title="Stop">${ICONS.stop}</button>
+      <button class="icon-btn" id="btnLoop" title="Loop: play the track again and again" aria-pressed="false">${ICONS.loop}</button>
+      <button class="icon-btn" id="btnVis" title="Visualizer on/off">${ICONS.disc}</button>
+    </div>
 
-var freqData = new Uint8Array(256);
+    <div class="rowbtns">
+      <a class="pill" id="btnDownload" download title="Download original file">${ICONS.download}<span>Download</span></a>
+      <button class="pill" id="btnEq" title="Open the EQ">${ICONS.eq}<span>EQ</span></button>
+    </div>
 
-function tick(){
-  requestAnimationFrame(tick);
-  ctx.clearRect(0,0,W,H);
-  if (!visualizerOn) return;
+    <div class="meta">${escapeHtml(metaBits)}</div>
+    <button class="norm-chip hidden" id="btnNorm"></button>
+  </section>
 
-  var now = performance.now();
-  var playing = analyser && !audio.paused;
+  <section class="glass rack" id="rack" aria-label="Sound controls">
+    <div class="rack-head">
+      <h2>Sound</h2>
+      <button class="icon-btn small" id="btnResetAll" title="Reset all sound controls">${ICONS.reset}</button>
+    </div>
+    <div class="presets" id="presets"></div>
+    <div class="rack-groups" id="rackGroups"></div>
+  </section>
+</main>
 
-  if (playing){
-    analyser.getByteFrequencyData(freqData);
-    // low-band energy = kick/bass-driven signal
-    var lowSum = 0, n = Math.floor(freqData.length*0.18);
-    for (var i=0;i<n;i++) lowSum += freqData[i];
-    var lowEnergy = lowSum / (n*255);
+<div class="eq-overlay" id="eqOverlay">
+  <div class="eq-panel glass" role="dialog" aria-label="Parametric EQ">
+    <div class="eq-head">
+      <h2>Parametric EQ</h2>
+      <div class="eq-head-actions">
+        <button class="chip eq-bypass" id="eqBypass" title="Compare with the original sound (A/B)" aria-pressed="false">Bypass</button>
+        <button class="icon-btn small" id="eqReset" title="Reset all bands">${ICONS.reset}</button>
+        <button class="icon-btn small" id="eqClose" title="Close">${ICONS.close}</button>
+      </div>
+    </div>
+    <div class="eq-body">
+      <div class="eq-graph" id="eqGraph"><canvas id="eqCanvas"></canvas></div>
+      <div class="eq-strip" id="eqStrip" aria-label="Bands"></div>
+    </div>
+    <div class="eq-hint" id="eqHint"></div>
+    <div class="presets eq-presets" id="eqPresets"></div>
+  </div>
+</div>
+<div class="eq-menu" id="eqMenu" role="menu"></div>
+${share ? GATE_HTML : ''}
 
-    // Spectral-flux onset detection: react to how much LOUDER things just
-    // got (positive-only delta), not to absolute loudness. A plain
-    // "current vs. running average of loudness itself" comparison self-
-    // defeats on sustained bass — the average catches up to match the
-    // beat's own level within a couple of hits and then nothing ever
-    // clears the threshold again (which was exactly the "one wave and then
-    // silence" bug). Flux stays near zero between hits regardless of how
-    // loud the track is, so every new transient still stands out cleanly.
-    var flux = Math.max(0, lowEnergy - prevLowEnergy);
-    prevLowEnergy = lowEnergy;
-    fluxAvg = fluxAvg*0.94 + flux*0.06;
+<audio id="audio" preload="metadata"></audio>
 
-    if (flux > fluxAvg*2.1 + 0.012 && now - lastSpawn > spawnCooldownMs){
-      spawnWave(Math.min(1, flux*9));
-      lastSpawn = now;
-    }
-  } else {
-    prevLowEnergy = 0;
-  }
-  // No sound -> no waves. Paused/silent means the canvas just lets whatever
-  // rings are already in flight finish fading out, nothing new spawns.
-
-  for (var w=waves.length-1; w>=0; w--){
-    var wv = waves[w];
-    wv.r += wv.speed;
-    wv.alpha *= 0.982;
-    if (wv.alpha < 0.008 || wv.r > maxReach){ waves.splice(w,1); continue; }
-
-    ctx.beginPath();
-    ctx.arc(cx, cy, wv.r, 0, Math.PI*2);
-    ctx.strokeStyle = 'hsla('+wv.hue+','+wv.sat+'%,'+wv.light+'%,'+wv.alpha+')';
-    ctx.lineWidth = wv.width;
-    ctx.shadowColor = 'hsla('+wv.hue+',95%,62%,0.75)';
-    ctx.shadowBlur = 18*devicePixelRatio;
-    ctx.stroke();
-
-    // faint inner glow fill for richness on the freshest, strongest rings
-    if (wv.alpha > 0.3){
-      ctx.beginPath();
-      ctx.arc(cx, cy, wv.r, 0, Math.PI*2);
-      ctx.strokeStyle = 'hsla('+wv.hue+',100%,80%,'+(wv.alpha*0.35)+')';
-      ctx.lineWidth = wv.width*2.4;
-      ctx.shadowBlur = 0;
-      ctx.stroke();
-    }
-  }
-}
-requestAnimationFrame(tick);
-
-})();
+<script type="text/plain" id="workletSrc">${CLIENT.worklets}</script>
+<script>window.TVFS_PLAYER = ${safeScriptJson(cfg)};</script>
+<script>
+${CLIENT.js}
 </script>
+${share ? `<script>${gateJs(share.shareId)}</script>` : ''}
 </body>
-
 </html>`;
+}
+
+function generateAudioPlayerHtml(audioUrl, originalName, meta, backUrl) {
+    return buildPlayerHtml({ audioUrl, originalName, meta, backUrl: backUrl || '/upload.html', share: null });
+}
+
+function generateProtectedAudioPlayerHtml(audioUrl, originalName, meta, shareId, landingUrl) {
+    // landingUrl is always present — every protected player belongs to a share
+    return buildPlayerHtml({ audioUrl, originalName, meta, backUrl: landingUrl, share: { shareId } });
 }
 
 // storedFilename: filename as saved on disk (in files/audio/)
@@ -1998,8 +399,16 @@ function maybeCreateAudioPlayer(storedFilename, originalName, mimeType, filePath
         console.error('⚠️  [AUDIO PLAYER] Metadata/BPM analysis failed:', e.message);
         meta = { codec: null, bitrateKbps: null, sampleRateHz: null, channels: null, durationSec: null, bpm: null };
     }
+    meta.lufs = measureLoudness(filePath);
 
-    const html = generateAudioPlayerHtml(publicAudioUrl, originalName, meta, backUrl);
+    let html;
+    try {
+        html = generateAudioPlayerHtml(publicAudioUrl, originalName, meta, backUrl);
+    } catch (e) {
+        // The upload itself must still succeed, it just gets no player page.
+        console.error('⚠️  [AUDIO PLAYER] Player page could not be generated:', e.message);
+        return null;
+    }
     const { filename: playerFilename, filePath: playerPath } =
         safeFs.writeFileUnique(playersDir, `${slug}_${Date.now()}_player.html`, html);
 
@@ -2032,8 +441,15 @@ function maybeCreateProtectedAudioPlayer(originalName, mimeType, filePath, playe
         console.error('⚠️  [PROTECTED AUDIO PLAYER] Metadata/BPM analysis failed:', e.message);
         meta = { codec: null, bitrateKbps: null, sampleRateHz: null, channels: null, durationSec: null, bpm: null };
     }
+    meta.lufs = measureLoudness(filePath);
 
-    const html = generateProtectedAudioPlayerHtml(contentUrl, originalName, meta, shareId, landingUrl);
+    let html;
+    try {
+        html = generateProtectedAudioPlayerHtml(contentUrl, originalName, meta, shareId, landingUrl);
+    } catch (e) {
+        console.error('⚠️  [PROTECTED AUDIO PLAYER] Player page could not be generated:', e.message);
+        return null;
+    }
     // Same-named tracks in one share (different folders) share slug + shareId: never overwrite
     const { filename: playerFilename, filePath: playerPath } =
         safeFs.writeFileUnique(playersDir, `${slug}_${shareId}_player.html`, html);

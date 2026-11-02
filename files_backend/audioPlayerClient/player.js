@@ -450,10 +450,10 @@ function normGain(){ return normOn ? Math.pow(10, normDb / 20) : 1; }
 var btnNorm = $('btnNorm');
 function syncNorm(){
   var d = Math.abs(normDb).toFixed(1);
-  btnNorm.textContent = normOn ? 'Loudness matched −' + d + ' dB' : 'Original loudness (+' + d + ' dB)';
+  btnNorm.textContent = normOn ? 'Normalization: On' : 'Normalization: Off';
   btnNorm.title = normOn
-    ? 'This track is mastered very loud, so it is turned down to the usual streaming level. Click for its original loudness.'
-    : 'Playing at the original loudness of the file. Click to match the usual streaming level again.';
+    ? 'Loudness normalization on: this track is mastered very loud, so it is turned down ' + d + ' dB to the usual streaming level. Click for its original loudness.'
+    : 'Loudness normalization off: playing at the original loudness of the file (' + d + ' dB louder). Click to match the usual streaming level again.';
   btnNorm.classList.toggle('is-off', !normOn);
 }
 if (normDb < -0.1) {

@@ -10,7 +10,7 @@
     <link rel="icon" type="image/x-icon" href="/icon.png">
     <link rel="manifest" href="/manifest.json?v=2">
     <style>
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Inter+Tight:wght@600;700;800;900&family=Archivo+Black&family=Space+Grotesk:wght@700;800&family=Syne:wght@800;900&display=swap');
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Inter+Tight:wght@600;700;800;900&family=Archivo+Black&family=Space+Grotesk:wght@700;800&family=Syne:wght@800;900&family=JetBrains+Mono:wght@400;600&display=swap');
 
         :root {
             --bg-color: #03070a;
@@ -1294,6 +1294,112 @@
             color: var(--text-secondary); font-size: 0.82rem; font-weight: 700; cursor: pointer;
         }
         .recent-show-more:hover { color: var(--text-main); background: rgba(255,255,255,0.06); }
+
+        /* ── Views: #settings and #check replace the main cards (same look as the naTiVeFS app pages) ── */
+        .view { display: none; }
+        body.view-settings .container > :not(#settingsView),
+        body.view-check .container > :not(#checkView) { display: none !important; }
+        body.view-settings #settingsView, body.view-check #checkView { display: flex; animation: fadeIn 0.3s ease; }
+        /* short views stay at the top instead of being centred (no jump when results appear) */
+        body.view-settings .container, body.view-check .container { margin-top: 0; }
+
+        .icon-btn {
+            background: transparent; border: none; cursor: pointer; padding: 8px; border-radius: 50%;
+            color: var(--text-secondary); display: inline-flex; align-items: center; justify-content: center;
+        }
+        .icon-btn:hover { color: var(--text-main); background: var(--glass-border); }
+        .icon-btn svg { width: 18px; height: 18px; display: block; }
+        /* phones: the gear must not cut off the brand subtitle */
+        @media (max-width: 520px) {
+            .brand-card { padding: 20px 16px 20px 20px; }
+            .brand-card .header-right { gap: 0; }
+            .brand-card .icon-btn, .brand-card .theme-toggle { padding: 6px; }
+        }
+
+        .page-head { display: flex; align-items: center; gap: 12px; }
+        .page-head .icon-btn { color: var(--text-main); margin-left: -8px; }
+        .page-title { display: flex; flex-direction: column; gap: 3px; }
+        .page-title-main { font-size: 1.25rem; font-weight: 800; letter-spacing: -0.01em; color: var(--text-main); line-height: 1.2; }
+        .page-title-sub {
+            font-family: 'Space Grotesk', 'Inter', sans-serif; font-size: 0.6rem; font-weight: 700;
+            letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-secondary);
+        }
+        .settings-section { display: flex; flex-direction: column; gap: 12px; }
+        .eyebrow { font-size: 0.65rem; font-weight: 800; letter-spacing: 0.12em; text-transform: uppercase; color: var(--text-secondary); opacity: 0.85; }
+
+        /* Glass off: flat translucent cards, no backdrop blur anywhere */
+        body.no-glass { --glass-bg: rgba(24, 28, 38, 0.62); }
+        body.no-glass.light-mode { --glass-bg: rgba(245, 248, 252, 0.72); }
+        body.no-glass * { backdrop-filter: none !important; -webkit-backdrop-filter: none !important; }
+
+        /* File Check (was check.html) */
+        .chk-subtitle { font-size: 0.8rem; color: var(--text-secondary); line-height: 1.5; margin-top: -12px; }
+        .chk-input-row { display: flex; gap: 10px; }
+        .chk-url-input {
+            flex: 1; min-width: 0; padding: 16px; height: 52px;
+            background: var(--glass-bg); border: 1px solid var(--glass-border); border-radius: 16px;
+            color: var(--text-main); font-size: 0.9rem; outline: none;
+            font-family: 'JetBrains Mono', monospace;
+        }
+        .chk-url-input:focus { border-color: var(--accent-primary); box-shadow: 0 0 0 3px rgba(176, 131, 255, 0.15); }
+        .chk-url-input::placeholder { color: var(--text-secondary); opacity: 0.5; font-family: 'Inter', sans-serif; }
+        .chk-probe-btn {
+            padding: 0 24px; height: 52px; min-width: 104px;
+            background: var(--accent-gradient); border: none; border-radius: 16px;
+            color: #fff; font-size: 0.9rem; font-weight: 700; cursor: pointer; letter-spacing: 0.02em;
+            box-shadow: 0 10px 22px -6px rgba(0, 230, 189, 0.45); white-space: nowrap;
+            display: flex; align-items: center; justify-content: center; gap: 8px;
+        }
+        .chk-probe-btn:hover { transform: translateY(-1px); }
+        .chk-probe-btn:disabled { opacity: 0.6; cursor: not-allowed; transform: none; }
+        .chk-spinner {
+            display: none; width: 14px; height: 14px; border: 2px solid rgba(255,255,255,0.3);
+            border-top-color: #fff; border-radius: 50%; animation: spin 0.8s linear infinite;
+        }
+        .chk-probe-btn.busy .chk-spinner { display: block; }
+        .chk-error {
+            display: none; background: rgba(255, 107, 107, 0.1); border: 1px solid rgba(255, 107, 107, 0.3);
+            border-radius: 16px; padding: 16px; color: var(--status-bad); font-size: 0.85rem; line-height: 1.5;
+        }
+        .chk-results { display: none; flex-direction: column; gap: 16px; animation: fadeIn 0.4s ease; }
+        .chk-section { display: flex; flex-direction: column; gap: 8px; }
+        .chk-label { font-size: 0.6rem; text-transform: uppercase; letter-spacing: 0.12em; font-weight: 700; color: var(--text-secondary); }
+        .chk-format-card { background: rgba(0,0,0,0.2); border: 1px solid var(--glass-border); border-radius: 16px; padding: 16px; }
+        .light-mode .chk-format-card { background: rgba(255,255,255,0.5); }
+        .chk-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 12px; }
+        .chk-stat { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+        .chk-stat-label { font-size: 0.62rem; color: var(--text-secondary); font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; }
+        .chk-stat-val { font-family: 'JetBrains Mono', monospace; font-size: 0.82rem; color: var(--text-main); font-weight: 600; overflow-wrap: anywhere; }
+        .chk-stat-val.accent { color: var(--accent-secondary); }
+        .chk-empty { color: var(--text-secondary); font-size: 0.8rem; }
+        .chk-divider { height: 1px; background: var(--glass-border); }
+        .chk-streams { display: flex; flex-direction: column; gap: 10px; }
+        .chk-stream { border: 1px solid var(--glass-border); border-radius: 16px; overflow: hidden; }
+        .chk-stream-head { display: flex; align-items: center; gap: 10px; padding: 12px 16px; border-bottom: 1px solid var(--glass-border); min-width: 0; }
+        .chk-stream-head.video { background: rgba(132, 85, 255, 0.22); }
+        .chk-stream-head.audio { background: rgba(0, 230, 189, 0.16); }
+        .chk-stream-head.other { background: rgba(255, 255, 255, 0.07); }
+        .chk-badge { font-size: 0.65rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; padding: 2px 8px; border-radius: 6px; flex-shrink: 0; }
+        .chk-badge.video { background: rgba(132, 85, 255, 0.4); color: var(--accent-primary); }
+        .chk-badge.audio { background: rgba(0, 230, 189, 0.28); color: var(--accent-secondary); }
+        .chk-badge.other { background: rgba(255, 255, 255, 0.07); color: var(--text-secondary); }
+        .chk-codec { font-family: 'JetBrains Mono', monospace; font-size: 0.85rem; font-weight: 600; color: var(--text-main); flex-shrink: 0; }
+        .chk-codec-long { font-size: 0.7rem; color: var(--text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+        .chk-stream-body { padding: 14px 16px; background: rgba(0,0,0,0.1); }
+        .light-mode .chk-stream-body { background: rgba(255,255,255,0.3); }
+        .chk-raw-toggle {
+            align-self: flex-end; background: none; border: none; font-size: 0.65rem; cursor: pointer;
+            text-decoration: underline; color: var(--text-secondary); padding: 0;
+        }
+        .chk-raw-toggle:hover { color: var(--accent-secondary); }
+        .chk-raw {
+            display: none; margin: 0; background: rgba(0,0,0,0.35); border: 1px solid var(--glass-border); border-radius: 12px;
+            padding: 14px; font-family: 'JetBrains Mono', monospace; font-size: 0.7rem; color: var(--text-secondary);
+            white-space: pre-wrap; overflow-wrap: anywhere; max-height: 300px; overflow-y: auto; line-height: 1.6;
+        }
+        .light-mode .chk-raw { background: rgba(0,0,0,0.05); }
+        @media (max-width: 500px) { .chk-input-row { flex-direction: column; } }
+        @media (max-width: 359px) { .chk-grid { grid-template-columns: 1fr; } }
     </style>
 </head>
 <body>
@@ -1323,6 +1429,9 @@
                     </div>
                 </div>
                 <div class="header-right">
+                    <a class="icon-btn" id="settingsOpenBtn" href="#settings" title="Settings" aria-label="Settings">
+                        <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" fill-rule="evenodd" d="M20.02,9.52 L22.78,9.81 L22.78,14.19 L20.02,14.48 L19.43,15.92 L21.17,18.08 L18.08,21.17 L15.92,19.43 L14.48,20.02 L14.19,22.78 L9.81,22.78 L9.52,20.02 L8.08,19.43 L5.92,21.17 L2.83,18.08 L4.57,15.92 L3.98,14.48 L1.22,14.19 L1.22,9.81 L3.98,9.52 L4.57,8.08 L2.83,5.92 L5.92,2.83 L8.08,4.57 L9.52,3.98 L9.81,1.22 L14.19,1.22 L14.48,3.98 L15.92,4.57 L18.08,2.83 L21.17,5.92 L19.43,8.08 Z M15.60,12 A3.6,3.6 0 1,0 8.40,12 A3.6,3.6 0 1,0 15.60,12 Z"/></svg>
+                    </a>
                     <button class="theme-toggle" id="themeToggle">🌙</button>
                 </div>
             </div>
@@ -1614,7 +1723,7 @@
                         <span class="info-card-title">View official whitepaper</span>
                     </div>
                 </a>
-                <a class="info-card" href="https://files.tomasekvalla.cz/check" target="_blank">
+                <a class="info-card" href="#check">
                     <img src="/icon.png" class="info-card-icon" alt="Check files">
                     <div class="info-card-text">
                         <span class="info-card-title">Check files</span>
@@ -1622,122 +1731,213 @@
                 </a>
             </div>
 
-            <!-- REMOVED (2026-08): Encrypted Sharing setting card hidden — see
-                 PAIRING_ENCRYPTED_REMOVAL.txt for the full removed feature and
-                 how to bring it back. Left in the DOM (just hidden) rather than
-                 deleted so the wiring code below doesn't need touching. -->
-            <div class="setting-card" id="encryptedSharingSettingCard" style="display:none;">
-                <div class="setting-card-row">
-                    <span class="setting-card-title">Encrypted Sharing</span>
-                    <div class="tri-switch" id="encryptedSharingSwitch">
-                        <button class="tri-btn active" data-val="off">Off</button>
-                        <button class="tri-btn" data-val="on">On</button>
-                    </div>
-                </div>
-                <div class="setting-explain">
-                    <span class="setting-explain-text">Reveals a checkbox above the file grid — client-side AES-256 encryption, we never see the password or your file's contents. Off by default.</span>
-                </div>
-            </div>
-
-            <div class="setting-card" id="tvfsUsersOnlyFeatureCard">
-                <div class="setting-card-row">
-                    <span class="setting-card-title">TVFS Users Only</span>
-                    <div class="tri-switch" id="tvfsUsersOnlyFeatureSwitch">
-                        <button class="tri-btn active" data-val="off">Off</button>
-                        <button class="tri-btn" data-val="on">On</button>
-                    </div>
-                </div>
-                <div class="setting-explain">
-                    <span class="setting-explain-text">Reveals a standalone sharing mode — files are shared as-is (no client-side encryption), and the server refuses to hand out the file bytes to anyone who isn't logged in to TVFS. Off by default.</span>
-                </div>
-            </div>
-
-            <!-- REMOVED (2026-08): Pairing setting card hidden — see
-                 PAIRING_ENCRYPTED_REMOVAL.txt. -->
-            <div class="setting-card" id="pairingFeatureCard" style="display:none;">
-                <div class="setting-card-row">
-                    <span class="setting-card-title">Pairing</span>
-                    <div class="tri-switch" id="pairingFeatureSwitch">
-                        <button class="tri-btn active" data-val="off">Off</button>
-                        <button class="tri-btn" data-val="on">On</button>
-                    </div>
-                </div>
-                <div class="setting-explain">
-                    <span class="setting-explain-text">Adds an alternative to the TVFS login gate: someone without TVFS credentials can request access, which you approve interactively from the Pairing Dashboard. Off by default.</span>
-                </div>
-            </div>
-
-            <div class="setting-card" id="chunkConfigCard">
-                <div class="setting-card-row">
-                    <span class="setting-card-title">Chunk configuration</span>
-                    <div class="tri-switch" id="chunkAutoSwitch">
-                        <button class="tri-btn" data-val="off">Fixed</button>
-                        <button class="tri-btn active" data-val="on">Manage automatically</button>
-                    </div>
-                </div>
-                <div class="setting-explain" id="chunkAutoExplainWrap">
-                    <span class="setting-explain-text" id="chunkAutoStatusText">Default: chunk size is picked from real transfer speed only — your own recent uploads on this device, refined by whatever's happened earlier in this session — never a separate speed test. Ranges from 96 KB (very poor connections — purely a safety net so a drop doesn't cost much progress) up to 32 MB (200 Mbps+). Parallel connections adapt the other way — more of them (up to your device's CPU thread count) on the smaller end where ping tends to hurt more, fewer (2-3) on the larger end where the per-chunk overhead already amortizes.</span>
-                </div>
-
-                <div class="chunk-config-inputs" id="chunkManualRow" style="display:none;">
-                    <input type="number" class="chunk-num-input" id="chunkCountInput" min="1" max="20" step="1" inputmode="numeric" value="3">
-                    <span class="chunk-config-x">×</span>
-                    <input type="number" class="chunk-num-input" id="chunkSizeInput" min="1" max="99" step="1" inputmode="numeric" value="30">
-                    <span class="chunk-config-unit">MB</span>
-                </div>
-                <div class="setting-msg-box" id="chunkMsgBox">
-                    <span class="setting-msg-icon">⚠️</span>
-                    <span class="setting-msg-text" id="chunkMsgText"></span>
-                </div>
-                <div class="setting-explain" id="chunkFixedExplainWrap" style="display:none;">
-                    <span class="setting-explain-text clamped" id="chunkExplainText">EXPERIENCED USERS ONLY: Configure the sizes of chunks uploaded to the server and the amount of parallel connections held to the server. Due to browser technology, we are not able to achieve a perfect parallel upload in the way that we would like to, however, setting more parallel connections means less time spent between chunks on handshakes with the server. Keep in mind that the connection to our server does not allow more than 100 MB to be sent at once, and based on our testing, it is better if connections times size stays comfortably under that number too. We recommend keeping the size under 50 MB under any conditions. The default, tested setting we recommend is 3 × 30, and if you're on a weak connection, you may want to lower the size so that you have more backup if the connection drops — try lowering to as low as 1, for example 3 × 1 on hotel wifis. Keep in mind that switching takes time though, so if it's not that bad, 5 or 10 would be a better choice.</span>
-                    <button class="setting-readmore" id="chunkReadMoreBtn">Read more</button>
-                </div>
-            </div>
-
-            <div class="setting-card" id="autoCopyCard">
-                <div class="setting-card-row">
-                    <span class="setting-card-title">Auto copy</span>
-                    <div class="tri-switch" id="autoCopyTriSwitch">
-                        <button class="tri-btn" data-mode="off">Off</button>
-                        <button class="tri-btn" data-mode="normal">Normal</button>
-                        <button class="tri-btn active" data-mode="styled">Styled</button>
-                    </div>
-                </div>
-                <div class="setting-explain">
-                    <span class="setting-explain-text clamped" id="autoCopyExplainText">All users: Our site automatically copies the link to your upload whenever it is done. While it may seem inconvenient, it sometimes does ask whether you allow it to access your clipboard on the first time — that is fine and you can accept it. We DO NOT access any contents in your clipboard unless you manually paste a file or text.</span>
-                    <button class="setting-readmore" id="autoCopyReadMoreBtn">Read more</button>
-                </div>
-
-                <div class="setting-card-row" id="autoCopyPreferRow" style="margin-top: 4px;">
-                    <span class="setting-card-title">When a tool link is available</span>
-                    <div class="tri-switch" id="autoCopyPreferTriSwitch">
-                        <button class="tri-btn" data-prefer="file">File</button>
-                        <button class="tri-btn active" data-prefer="tool">Tool</button>
-                    </div>
-                </div>
-                <div class="setting-explain">
-                    <span class="setting-explain-text clamped" id="autoCopyPreferExplainText">Some uploads also generate a dedicated "tool" page alongside the regular file link — currently that's the text/markdown reader or the audio player, with more kinds possibly added later. This decides which one auto copy grabs by default when both exist — the Off/Normal/Styled choice above still applies on top of whichever one is picked.</span>
-                    <button class="setting-readmore" id="autoCopyPreferReadMoreBtn">Read more</button>
-                </div>
-
-                <div class="setting-card-row" id="autoCopyImageRow" style="margin-top: 4px;">
-                    <span class="setting-card-title">If an image was uploaded</span>
-                    <div class="tri-switch" id="autoCopyImageTriSwitch">
-                        <button class="tri-btn active" data-mode="normal">Normal</button>
-                        <button class="tri-btn" data-mode="styled">Styled</button>
-                    </div>
-                </div>
-                <div class="setting-explain">
-                    <span class="setting-explain-text clamped" id="autoCopyImageExplainText">Images already embed nicely as plain links almost everywhere (chat apps, forums, etc. generate their own preview), so you don't need the Styled markdown link nearly as often. This overrides the Normal/Styled choice above specifically for images — default is Normal.</span>
-                    <button class="setting-readmore" id="autoCopyImageReadMoreBtn">Read more</button>
-                </div>
-            </div>
-
             <div class="disclaimer-paragraphs">
                 <p><strong>IMPORTANT NOTICE:</strong> You are uploading files to the publicly accessible internet. Anyone with the link can access them. To protect your privacy, never upload sensitive data and set the expiration date as short as possible. Please note that the site administrator has direct access to all stored files for maintenance and moderation purposes. More information about how we handle your data can be found on our <a href="https://files.tomasekvalla.cz/privacy" target="_blank">privacy page</a>.</p>
                 <p><strong>CONTENT POLICY:</strong> Please do not upload any content that is illegal, copyrighted (piracy), or violates our terms. Doing so puts the platform at risk. If any illegal content is found, it will be immediately deleted, and the user will likely be warned or restricted. Keep in mind that if law enforcement or legal authorities come knocking on our door, we will not hesitate to use and provide all stored metadata against the responsible person. A good rule of thumb: if you wouldn't want to be publicly confronted or held accountable for a file, it does not belong here.</p>
                 <p><strong>DATA COLLECTION NOTICE:</strong> We only collect data that is essential to keep the service functional, stable, and secure. This includes session tokens (so you don't have to log in every time) and your upload history for cross-device syncing. For security reasons, we also automatically log certain metadata for every transaction (including initiated or unfinished uploads). This includes the precise time, expiration date, file details, and network routing information (including your IP address and geographic location data). This data is securely stored for 4 months. It is never shared with third parties, and the site administrator (more details on who that is can be found on the <a href="https://files.tomasekvalla.cz/privacy" target="_blank">privacy page</a>) does not intentionally inspect it unless a violation occurs. <em>Note on Cloudflare:</em> We use Cloudflare to ensure security and connectivity. They automatically process basic network metadata to protect the site from attacks. You can learn more about how they handle data in their <a href="https://www.cloudflare.com/privacypolicy/" target="_blank">privacy policy</a>.</p>
+            </div>
+        </div>
+        <div class="glass-card view" id="settingsView">
+            <div class="page-head">
+                <a class="icon-btn" href="#" data-view-back title="Back" aria-label="Back">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" d="M19 12H5M11 5l-7 7 7 7"/></svg>
+                </a>
+                <div class="page-title">
+                    <span class="page-title-main">TVFS</span>
+                    <span class="page-title-sub">Settings</span>
+                </div>
+            </div>
+
+            <div class="settings-section">
+                <span class="eyebrow">Appearance</span>
+                <div class="setting-card">
+                    <div class="setting-card-row">
+                        <span class="setting-card-title">Theme</span>
+                        <div class="tri-switch" id="themeSwitch">
+                            <button class="tri-btn active" data-val="dark">Dark</button>
+                            <button class="tri-btn" data-val="light">Light</button>
+                        </div>
+                    </div>
+                    <div class="setting-explain"><span class="setting-explain-text">Same switch as the moon / sun button on the main page.</span></div>
+                </div>
+                <div class="setting-card">
+                    <div class="setting-card-row">
+                        <span class="setting-card-title">Glass</span>
+                        <div class="tri-switch" id="glassSwitch">
+                            <button class="tri-btn" data-val="off">Off</button>
+                            <button class="tri-btn active" data-val="on">On</button>
+                        </div>
+                    </div>
+                    <div class="setting-explain"><span class="setting-explain-text">Frosted glass cards: the cards blur and saturate the background behind them. Off = flat translucent cards, lighter on weak phones and laptops.</span></div>
+                </div>
+                <div class="setting-card">
+                    <div class="setting-card-row">
+                        <span class="setting-card-title">Background motion</span>
+                        <div class="tri-switch" id="bgMotionSwitch">
+                            <button class="tri-btn" data-val="0">Off</button>
+                            <button class="tri-btn" data-val="30">30 FPS</button>
+                            <button class="tri-btn" data-val="60">60 FPS</button>
+                            <button class="tri-btn active" data-val="full">Full</button>
+                        </div>
+                    </div>
+                    <div class="setting-explain"><span class="setting-explain-text">The moving "screensaver" orbs. Full = one frame per screen refresh (e.g. 144 Hz on a 144 Hz screen). Off = still background, no CPU/GPU use. The animation always pauses while the tab is hidden.</span></div>
+                </div>
+            </div>
+
+            <div class="settings-section">
+                <span class="eyebrow">Sharing</span>
+                <!-- REMOVED (2026-08): Encrypted Sharing setting card hidden — see
+                     PAIRING_ENCRYPTED_REMOVAL.txt for the full removed feature and
+                     how to bring it back. Left in the DOM (just hidden) rather than
+                     deleted so the wiring code below doesn't need touching. -->
+                <div class="setting-card" id="encryptedSharingSettingCard" style="display:none;">
+                    <div class="setting-card-row">
+                        <span class="setting-card-title">Encrypted Sharing</span>
+                        <div class="tri-switch" id="encryptedSharingSwitch">
+                            <button class="tri-btn active" data-val="off">Off</button>
+                            <button class="tri-btn" data-val="on">On</button>
+                        </div>
+                    </div>
+                    <div class="setting-explain">
+                        <span class="setting-explain-text">Reveals a checkbox above the file grid — client-side AES-256 encryption, we never see the password or your file's contents. Off by default.</span>
+                    </div>
+                </div>
+
+                <div class="setting-card" id="tvfsUsersOnlyFeatureCard">
+                    <div class="setting-card-row">
+                        <span class="setting-card-title">TVFS Users Only</span>
+                        <div class="tri-switch" id="tvfsUsersOnlyFeatureSwitch">
+                            <button class="tri-btn active" data-val="off">Off</button>
+                            <button class="tri-btn" data-val="on">On</button>
+                        </div>
+                    </div>
+                    <div class="setting-explain">
+                        <span class="setting-explain-text">Reveals a standalone sharing mode — files are shared as-is (no client-side encryption), and the server refuses to hand out the file bytes to anyone who isn't logged in to TVFS. Off by default.</span>
+                    </div>
+                </div>
+
+                <!-- REMOVED (2026-08): Pairing setting card hidden — see
+                     PAIRING_ENCRYPTED_REMOVAL.txt. -->
+                <div class="setting-card" id="pairingFeatureCard" style="display:none;">
+                    <div class="setting-card-row">
+                        <span class="setting-card-title">Pairing</span>
+                        <div class="tri-switch" id="pairingFeatureSwitch">
+                            <button class="tri-btn active" data-val="off">Off</button>
+                            <button class="tri-btn" data-val="on">On</button>
+                        </div>
+                    </div>
+                    <div class="setting-explain">
+                        <span class="setting-explain-text">Adds an alternative to the TVFS login gate: someone without TVFS credentials can request access, which you approve interactively from the Pairing Dashboard. Off by default.</span>
+                    </div>
+                </div>
+
+            </div>
+
+            <div class="settings-section">
+                <span class="eyebrow">Uploads</span>
+                <div class="setting-card" id="chunkConfigCard">
+                    <div class="setting-card-row">
+                        <span class="setting-card-title">Chunk configuration</span>
+                        <div class="tri-switch" id="chunkAutoSwitch">
+                            <button class="tri-btn" data-val="off">Fixed</button>
+                            <button class="tri-btn active" data-val="on">Manage automatically</button>
+                        </div>
+                    </div>
+                    <div class="setting-explain" id="chunkAutoExplainWrap">
+                        <span class="setting-explain-text" id="chunkAutoStatusText">Default: chunk size is picked from real transfer speed only — your own recent uploads on this device, refined by whatever's happened earlier in this session — never a separate speed test. Ranges from 96 KB (very poor connections — purely a safety net so a drop doesn't cost much progress) up to 32 MB (200 Mbps+). Parallel connections adapt the other way — more of them (up to your device's CPU thread count) on the smaller end where ping tends to hurt more, fewer (2-3) on the larger end where the per-chunk overhead already amortizes.</span>
+                    </div>
+
+                    <div class="chunk-config-inputs" id="chunkManualRow" style="display:none;">
+                        <input type="number" class="chunk-num-input" id="chunkCountInput" min="1" max="20" step="1" inputmode="numeric" value="3">
+                        <span class="chunk-config-x">×</span>
+                        <input type="number" class="chunk-num-input" id="chunkSizeInput" min="1" max="99" step="1" inputmode="numeric" value="30">
+                        <span class="chunk-config-unit">MB</span>
+                    </div>
+                    <div class="setting-msg-box" id="chunkMsgBox">
+                        <span class="setting-msg-icon">⚠️</span>
+                        <span class="setting-msg-text" id="chunkMsgText"></span>
+                    </div>
+                    <div class="setting-explain" id="chunkFixedExplainWrap" style="display:none;">
+                        <span class="setting-explain-text clamped" id="chunkExplainText">EXPERIENCED USERS ONLY: Configure the sizes of chunks uploaded to the server and the amount of parallel connections held to the server. Due to browser technology, we are not able to achieve a perfect parallel upload in the way that we would like to, however, setting more parallel connections means less time spent between chunks on handshakes with the server. Keep in mind that the connection to our server does not allow more than 100 MB to be sent at once, and based on our testing, it is better if connections times size stays comfortably under that number too. We recommend keeping the size under 50 MB under any conditions. The default, tested setting we recommend is 3 × 30, and if you're on a weak connection, you may want to lower the size so that you have more backup if the connection drops — try lowering to as low as 1, for example 3 × 1 on hotel wifis. Keep in mind that switching takes time though, so if it's not that bad, 5 or 10 would be a better choice.</span>
+                        <button class="setting-readmore" id="chunkReadMoreBtn">Read more</button>
+                    </div>
+                </div>
+
+            </div>
+
+            <div class="settings-section">
+                <span class="eyebrow">Auto copy</span>
+                <div class="setting-card" id="autoCopyCard">
+                    <div class="setting-card-row">
+                        <span class="setting-card-title">Auto copy</span>
+                        <div class="tri-switch" id="autoCopyTriSwitch">
+                            <button class="tri-btn" data-mode="off">Off</button>
+                            <button class="tri-btn" data-mode="normal">Normal</button>
+                            <button class="tri-btn active" data-mode="styled">Styled</button>
+                        </div>
+                    </div>
+                    <div class="setting-explain">
+                        <span class="setting-explain-text clamped" id="autoCopyExplainText">All users: Our site automatically copies the link to your upload whenever it is done. While it may seem inconvenient, it sometimes does ask whether you allow it to access your clipboard on the first time — that is fine and you can accept it. We DO NOT access any contents in your clipboard unless you manually paste a file or text.</span>
+                        <button class="setting-readmore" id="autoCopyReadMoreBtn">Read more</button>
+                    </div>
+
+                    <div class="setting-card-row" id="autoCopyPreferRow" style="margin-top: 4px;">
+                        <span class="setting-card-title">When a tool link is available</span>
+                        <div class="tri-switch" id="autoCopyPreferTriSwitch">
+                            <button class="tri-btn" data-prefer="file">File</button>
+                            <button class="tri-btn active" data-prefer="tool">Tool</button>
+                        </div>
+                    </div>
+                    <div class="setting-explain">
+                        <span class="setting-explain-text clamped" id="autoCopyPreferExplainText">Some uploads also generate a dedicated "tool" page alongside the regular file link — currently that's the text/markdown reader or the audio player, with more kinds possibly added later. This decides which one auto copy grabs by default when both exist — the Off/Normal/Styled choice above still applies on top of whichever one is picked.</span>
+                        <button class="setting-readmore" id="autoCopyPreferReadMoreBtn">Read more</button>
+                    </div>
+
+                    <div class="setting-card-row" id="autoCopyImageRow" style="margin-top: 4px;">
+                        <span class="setting-card-title">If an image was uploaded</span>
+                        <div class="tri-switch" id="autoCopyImageTriSwitch">
+                            <button class="tri-btn active" data-mode="normal">Normal</button>
+                            <button class="tri-btn" data-mode="styled">Styled</button>
+                        </div>
+                    </div>
+                    <div class="setting-explain">
+                        <span class="setting-explain-text clamped" id="autoCopyImageExplainText">Images already embed nicely as plain links almost everywhere (chat apps, forums, etc. generate their own preview), so you don't need the Styled markdown link nearly as often. This overrides the Normal/Styled choice above specifically for images — default is Normal.</span>
+                        <button class="setting-readmore" id="autoCopyImageReadMoreBtn">Read more</button>
+                    </div>
+                </div>
+
+            </div>
+        </div>
+
+
+        <div class="glass-card view" id="checkView">
+            <div class="page-head">
+                <a class="icon-btn" href="#" data-view-back title="Back" aria-label="Back">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" d="M19 12H5M11 5l-7 7 7 7"/></svg>
+                </a>
+                <div class="page-title">
+                    <span class="page-title-main">TVFS</span>
+                    <span class="page-title-sub">File Check</span>
+                </div>
+            </div>
+            <p class="chk-subtitle">Paste a files.tomasekvalla.cz link to inspect codec, bitrate, resolution, frame rate and more via ffprobe.</p>
+            <div class="chk-input-row">
+                <input type="text" id="chkUrlInput" class="chk-url-input" placeholder="https://files.tomasekvalla.cz/files/videos/..." autocomplete="off" spellcheck="false">
+                <button class="chk-probe-btn" id="chkProbeBtn"><span class="chk-spinner"></span><span id="chkProbeBtnText">Inspect</span></button>
+            </div>
+            <div class="chk-error" id="chkError"></div>
+            <div class="chk-results" id="chkResults">
+                <div class="chk-section">
+                    <span class="chk-label">Container / Format</span>
+                    <div class="chk-format-card" id="chkFormatCard"></div>
+                </div>
+                <div class="chk-divider"></div>
+                <div class="chk-section">
+                    <span class="chk-label">Streams</span>
+                    <div class="chk-streams" id="chkStreams"></div>
+                </div>
+                <button class="chk-raw-toggle" id="chkRawToggle">Show raw ffprobe JSON</button>
+                <pre class="chk-raw" id="chkRaw"></pre>
             </div>
         </div>
     </div>
@@ -2276,7 +2476,278 @@
             var isLight = document.body.classList.contains('light-mode');
             localStorage.setItem('theme', isLight ? 'light' : 'dark');
             els.themeToggle.textContent = isLight ? '☀️' : '🌙';
+            syncAppearanceSwitches();
         });
+
+        // ============================================================
+        // VIEWS — #settings and #check replace the main cards (like the
+        // naTiVeFS app pages). The hash keeps Back/Forward and links working.
+        // ============================================================
+        var currentView = '';
+        var mainScrollTop = 0;
+        var scrollWrap = document.querySelector('.scroll-wrap');
+
+        function applyView() {
+            var v = location.hash.replace('#', '');
+            if (v !== 'settings' && v !== 'check') v = '';
+            if (v === currentView) return;
+            if (currentView === '') mainScrollTop = scrollWrap.scrollTop;
+            document.body.classList.remove('view-settings', 'view-check');
+            if (v) document.body.classList.add('view-' + v);
+            if (v === 'check') checkOpened();
+            scrollWrap.scrollTop = v ? 0 : mainScrollTop;
+            currentView = v;
+        }
+        window.addEventListener('hashchange', applyView);
+
+        // Back: return to the main view without adding a history entry when we came from it
+        document.querySelectorAll('[data-view-back]').forEach(function(a) {
+            a.addEventListener('click', function(e) {
+                e.preventDefault();
+                if (history.state && history.state.tvfsView) history.back();
+                else { history.replaceState(null, '', location.pathname + location.search); applyView(); }
+            });
+        });
+        document.querySelectorAll('a[href="#settings"], a[href="#check"]').forEach(function(a) {
+            a.addEventListener('click', function(e) {
+                e.preventDefault();
+                history.pushState({ tvfsView: true }, '', a.getAttribute('href'));
+                applyView();
+            });
+        });
+        window.addEventListener('popstate', applyView);
+        document.addEventListener('keydown', function(e) {
+            if (e.key === 'Escape' && currentView && document.activeElement !== chk.input) {
+                document.querySelector('#' + currentView + 'View [data-view-back]').click();
+            }
+        });
+
+        // ============================================================
+        // APPEARANCE SETTINGS — theme, glass, background motion
+        // ============================================================
+        function setSwitch(id, val) {
+            document.querySelectorAll('#' + id + ' .tri-btn').forEach(function(b) {
+                b.classList.toggle('active', b.getAttribute('data-val') === val);
+            });
+        }
+        function onSwitch(id, fn) {
+            document.querySelectorAll('#' + id + ' .tri-btn').forEach(function(b) {
+                b.addEventListener('click', function() { fn(b.getAttribute('data-val')); });
+            });
+        }
+        function bgMotionPref() {
+            var v = localStorage.getItem('tvfs_bg_motion');
+            return (v === '0' || v === '30' || v === '60') ? v : 'full';
+        }
+        function syncAppearanceSwitches() {
+            setSwitch('themeSwitch', document.body.classList.contains('light-mode') ? 'light' : 'dark');
+            setSwitch('glassSwitch', document.body.classList.contains('no-glass') ? 'off' : 'on');
+            setSwitch('bgMotionSwitch', bgMotionPref());
+        }
+        if (localStorage.getItem('tvfs_glass') === 'off') document.body.classList.add('no-glass');
+        syncAppearanceSwitches();
+
+        onSwitch('themeSwitch', function(val) {
+            if ((val === 'light') !== document.body.classList.contains('light-mode')) els.themeToggle.click();
+        });
+        onSwitch('glassSwitch', function(val) {
+            document.body.classList.toggle('no-glass', val === 'off');
+            localStorage.setItem('tvfs_glass', val);
+            syncAppearanceSwitches();
+        });
+        onSwitch('bgMotionSwitch', function(val) {
+            localStorage.setItem('tvfs_bg_motion', val);
+            if (window.TVFS_setBgMotion) window.TVFS_setBgMotion(val);
+            syncAppearanceSwitches();
+        });
+
+        // ============================================================
+        // FILE CHECK (formerly check.html) — POST /api/probe
+        // ============================================================
+        var chk = {
+            input: document.getElementById('chkUrlInput'),
+            btn: document.getElementById('chkProbeBtn'),
+            btnText: document.getElementById('chkProbeBtnText'),
+            error: document.getElementById('chkError'),
+            results: document.getElementById('chkResults'),
+            formatCard: document.getElementById('chkFormatCard'),
+            streams: document.getElementById('chkStreams'),
+            rawToggle: document.getElementById('chkRawToggle'),
+            raw: document.getElementById('chkRaw'),
+        };
+        var chkVisit = 0;   // bumped on every open; a probe that returns after leaving is dropped
+        var chkBusy = false;
+
+        // Opens empty every time, like reloading the old check.html
+        function checkOpened() {
+            chkVisit++;
+            chkSetBusy(false);
+            chk.input.value = '';
+            chk.error.style.display = 'none';
+            chk.results.style.display = 'none';
+            chkShowRaw(false);
+            setTimeout(function() { if (currentView === 'check') chk.input.focus(); }, 50);
+        }
+        function chkSetBusy(v) {
+            chkBusy = v;
+            chk.btn.disabled = v;
+            chk.btn.classList.toggle('busy', v);
+            chk.btnText.textContent = v ? 'Probing...' : 'Inspect';
+        }
+        function chkShowRaw(v) {
+            chk.raw.style.display = v ? 'block' : 'none';
+            chk.rawToggle.textContent = v ? 'Hide raw ffprobe JSON' : 'Show raw ffprobe JSON';
+            if (v) chk.raw.scrollTop = 0;
+        }
+        chk.rawToggle.addEventListener('click', function() { chkShowRaw(chk.raw.style.display === 'none'); });
+        chk.btn.addEventListener('click', chkProbe);
+        chk.input.addEventListener('keydown', function(e) {
+            if (e.key === 'Enter') chkProbe();
+            if (e.key === 'Escape') chk.input.blur();
+        });
+
+        // Paste on the check view: a TVFS link fills the field. Pasted files are only
+        // added to the upload on the main view.
+        document.addEventListener('paste', function(e) {
+            if (!currentView) return;
+            e.stopImmediatePropagation();
+            if (currentView !== 'check' || document.activeElement === chk.input) return;
+            var text = (e.clipboardData.getData('text/plain') || '').trim();
+            if (text.indexOf('https://files.tomasekvalla.cz/') === 0) {
+                chk.input.value = text;
+                e.preventDefault();
+            }
+        }, true);
+
+        async function chkProbe() {
+            var url = chk.input.value.trim();
+            if (!url || chkBusy) return;
+            var visit = chkVisit;
+            chk.error.style.display = 'none';
+            chk.results.style.display = 'none';
+            chkShowRaw(false);
+            chkSetBusy(true);
+            var data = null, err = null;
+            try {
+                var r = await fetch('/api/probe', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ url: url })
+                });
+                var body = await r.json().catch(function() { return {}; });
+                if (!r.ok) err = body.error || ('Error ' + r.status);
+                else data = body;
+            } catch (e) {
+                err = 'Network error: ' + e.message;
+            }
+            if (visit !== chkVisit) return;
+            chkSetBusy(false);
+            if (err) { chk.error.textContent = err; chk.error.style.display = 'block'; return; }
+            chkRender(data);
+        }
+
+        function chkBytes(b) {
+            if (!b) return '—';
+            b = parseInt(b);
+            var k = 1024, s = ['B', 'KB', 'MB', 'GB'];
+            var i = Math.floor(Math.log(b) / Math.log(k));
+            return (b / Math.pow(k, i)).toFixed(2) + ' ' + s[i];
+        }
+        function chkDuration(s) {
+            if (!s) return '—';
+            s = parseFloat(s);
+            var h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = (s % 60).toFixed(3);
+            if (h > 0) return h + 'h ' + m + 'm ' + sec + 's';
+            if (m > 0) return m + 'm ' + sec + 's';
+            return sec + 's';
+        }
+        function chkBitrate(bps) {
+            if (!bps) return '—';
+            bps = parseInt(bps);
+            if (bps >= 1000000) return (bps / 1000000).toFixed(2) + ' Mbps';
+            return (bps / 1000).toFixed(0) + ' kbps';
+        }
+        function chkFrameRate(fr) {
+            if (!fr || fr === '0/0') return '—';
+            if (fr.indexOf('/') >= 0) {
+                var p = fr.split('/').map(Number);
+                if (p[1] === 0) return '—';
+                return (p[0] / p[1]).toFixed(3).replace(/\.?0+$/, '') + ' fps';
+            }
+            return fr + ' fps';
+        }
+        function chkEl(cls, text) {
+            var el = document.createElement(text === undefined ? 'div' : 'span');
+            el.className = cls;
+            if (text !== undefined) el.textContent = text;
+            return el;
+        }
+        // Built with textContent, never innerHTML: ffprobe values and file names come from uploaded files
+        function chkGrid(stats) {
+            var grid = chkEl('chk-grid');
+            stats.forEach(function(st) {
+                var cell = chkEl('chk-stat');
+                var val = (st[1] === undefined || st[1] === null || st[1] === '') ? '—' : String(st[1]);
+                cell.appendChild(chkEl('chk-stat-label', st[0]));
+                cell.appendChild(chkEl('chk-stat-val' + (st[2] ? ' accent' : ''), val));
+                grid.appendChild(cell);
+            });
+            return grid;
+        }
+        function chkRender(data) {
+            var f = data.format;
+            chk.formatCard.innerHTML = '';
+            chk.formatCard.appendChild(f ? chkGrid([
+                ['Format', f.format_long_name || f.format_name, true],
+                ['Duration', chkDuration(f.duration), true],
+                ['File Size', chkBytes(f.size)],
+                ['Overall Bitrate', chkBitrate(f.bit_rate), true],
+                ['Streams', f.nb_streams],
+                ['Filename', (function() { try { return decodeURIComponent(new URL(f.filename).pathname.split('/').pop()); } catch (e) { return f.filename; } })()],
+            ]) : chkEl('chk-empty', 'No format info'));
+
+            chk.streams.innerHTML = '';
+            (data.streams || []).forEach(function(s) {
+                var type = s.codec_type === 'video' || s.codec_type === 'audio' ? s.codec_type : 'other';
+                var stats = null;
+                if (type === 'video') stats = [
+                    ['Resolution', s.width && s.height ? s.width + ' × ' + s.height : '—', true],
+                    ['Frame Rate', chkFrameRate(s.r_frame_rate), true],
+                    ['Avg Frame Rate', chkFrameRate(s.avg_frame_rate)],
+                    ['Bitrate', chkBitrate(s.bit_rate), true],
+                    ['Pixel Format', s.pix_fmt],
+                    ['Profile', s.profile],
+                    ['Color Space', s.color_space],
+                    ['Color Range', s.color_range],
+                    ['Duration', chkDuration(s.duration)],
+                    ['Frames', s.nb_frames],
+                ];
+                else if (type === 'audio') stats = [
+                    ['Sample Rate', s.sample_rate ? s.sample_rate + ' Hz' : '—', true],
+                    ['Channels', s.channels, true],
+                    ['Layout', s.channel_layout],
+                    ['Bitrate', chkBitrate(s.bit_rate), true],
+                    ['Duration', chkDuration(s.duration)],
+                ];
+                var card = chkEl('chk-stream');
+                var head = chkEl('chk-stream-head ' + type);
+                var long = chkEl('chk-codec-long', s.codec_long_name || '');
+                long.title = s.codec_long_name || '';
+                head.appendChild(chkEl('chk-badge ' + type, s.codec_type || 'unknown'));
+                head.appendChild(chkEl('chk-codec', s.codec_name || '—'));
+                head.appendChild(long);
+                card.appendChild(head);
+                if (stats) {
+                    var body = chkEl('chk-stream-body');
+                    body.appendChild(chkGrid(stats));
+                    card.appendChild(body);
+                }
+                chk.streams.appendChild(card);
+            });
+            chk.raw.textContent = JSON.stringify(data.raw, null, 2);
+            chk.results.style.display = 'flex';
+        }
+        applyView();
 
         // ============================================================
         // MAGIX SWITCH
@@ -7526,9 +7997,27 @@
         window.addEventListener('resize', onResize);
 
         var themeToggle = document.getElementById('themeToggle');
-        if (themeToggle) themeToggle.addEventListener('click', function(){ setTimeout(initOrbs, 50); });
+        if (themeToggle) themeToggle.addEventListener('click', function(){ setTimeout(function(){ initOrbs(); redrawIfStill(); }, 50); });
 
         var raf, t = 0;
+        // "Background motion" setting: 0 = still frame, 30 / 60 = frame cap, 'full' = every screen refresh
+        var motion = localStorage.getItem('tvfs_bg_motion') || 'full';
+        var capTimer = null, nextDue = 0;
+        function stopLoop() { cancelAnimationFrame(raf); clearTimeout(capTimer); capTimer = null; }
+        function startLoop() { stopLoop(); lastTs = null; nextDue = 0; if (!document.hidden) raf = requestAnimationFrame(draw); }
+        // After a frame: next one at the next screen refresh (full), or a timer until the
+        // capped frame is due, then the refresh after it (no wake-ups just to skip frames)
+        function scheduleNext(ts) {
+            if (motion === 'full') { raf = requestAnimationFrame(draw); return; }
+            if (motion !== '30' && motion !== '60') return;
+            var frameMs = 1000 / Number(motion);
+            var now = performance.now();
+            nextDue = (nextDue && nextDue > now - frameMs) ? nextDue + frameMs : now + frameMs;
+            capTimer = setTimeout(function() { capTimer = null; raf = requestAnimationFrame(draw); }, Math.max(0, nextDue - now - 3));
+        }
+        function redrawIfStill() { if (motion === '0') startLoop(); }
+        window.TVFS_setBgMotion = function(val) { motion = val; startLoop(); };
+        window.addEventListener('resize', function(){ setTimeout(redrawIfStill, 150); });
         var animSpeedTarget = 1.0;
         var animSpeedCurrent = 1.0;
         var lastTs = null;
@@ -7602,14 +8091,14 @@
                 for (var i = 0; i < bgOrbs.length; i++) drawOrb(bgOrbs[i], diag, W, H, 'multiply');
             }
 
-            raf = requestAnimationFrame(draw);
+            scheduleNext(ts);
         }
 
         raf = requestAnimationFrame(draw);
 
         document.addEventListener('visibilitychange', function() {
-            if (document.hidden) cancelAnimationFrame(raf);
-            else raf = requestAnimationFrame(draw);
+            if (document.hidden) stopLoop();
+            else { stopLoop(); raf = requestAnimationFrame(draw); }
         });
     })();
     </script>

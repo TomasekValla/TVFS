@@ -1187,6 +1187,11 @@ function maybeCreateAudioPlayer(storedFilename, originalName, mimeType, filePath
 
 
 
+// File extensions end up in public links: same ASCII-only rule as the base name (".mp3" stays ".mp3")
+function safeExt(ext) {
+    return ext.normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^\w.\-]/g, '_');
+}
+
 const storage = multer.diskStorage({
     destination: function(req, file, cb) {
         cb(null, getDestDir(file.mimetype));
@@ -1202,6 +1207,8 @@ const storage = multer.diskStorage({
 
 const upload = multer({
     storage: storage,
+    // Browsers send file names as UTF-8; multer defaults to latin1, which garbled non-ASCII names
+    defParamCharset: 'utf8',
     limits: { fileSize: 5 * 1024 * 1024 * 1024 }
 });
 
@@ -2107,8 +2114,9 @@ router.post('/upload/complete', async (req, res) => {
         const destDir = getDestDir(manifest.mimeType);
         const category = getDirCategory(destDir);
         const timestamp = Date.now();
-        const ext = path.extname(manifest.filename);
-        let name = path.basename(manifest.filename, ext);
+        const rawExt = path.extname(manifest.filename);
+        let name = path.basename(manifest.filename, rawExt);
+        const ext = safeExt(rawExt);
 
         const isAnonymized = anonymize === true || anonymize === 'true';
 
@@ -2116,7 +2124,8 @@ router.post('/upload/complete', async (req, res) => {
             const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
             name = Array.from({ length: 16 }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
         } else {
-            name = name.replace(/\s+/g, '_')
+            name = name.normalize('NFD').replace(/[̀-ͯ]/g, '') // "Země" -> "Zeme" instead of "Zem_"
+            .replace(/\s+/g, '_')
             .replace(/[^\w\-_.]/g, '_')
             .replace(/_+/g, '_');
         }
@@ -2661,8 +2670,9 @@ router.post('/upload', upload.single('file'), async (req, res) => {
 
     // ─── Rename to final filename now that req.body is fully populated ───
     const timestamp = Date.now();
-    const ext = path.extname(req.file.originalname);
-    let baseName = path.basename(req.file.originalname, ext);
+    const rawExt = path.extname(req.file.originalname);
+    let baseName = path.basename(req.file.originalname, rawExt);
+    const ext = safeExt(rawExt);
     const isAnonymized = req.body.anonymize === 'true' || req.body.anonymize === true;
 
     let finalFilename;
@@ -2671,7 +2681,8 @@ router.post('/upload', upload.single('file'), async (req, res) => {
         const randomName = Array.from({ length: 16 }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
         finalFilename = `${randomName}${ext}`;
     } else {
-        baseName = baseName.replace(/\s+/g, '_')
+        baseName = baseName.normalize('NFD').replace(/[̀-ͯ]/g, '') // "Země" -> "Zeme" instead of "Zem_"
+        .replace(/\s+/g, '_')
         .replace(/[^\w\-_.]/g, '_')
         .replace(/_+/g, '_');
         const wantsNoTimestamp = (req.body.removeTimestamp === 'true' || req.body.removeTimestamp === true) && auth.tier === 2;

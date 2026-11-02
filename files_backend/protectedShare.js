@@ -203,6 +203,7 @@ const upload = multer({
         destination: (req, file, cb) => cb(null, SHARE_TMP_DIR),
         filename: (req, file, cb) => cb(null, `${crypto.randomBytes(8).toString('hex')}_${file.fieldname}`)
     }),
+    defParamCharset: 'utf8', // file names arrive as UTF-8 (multer defaults to latin1)
     limits: { fileSize: 5 * 1024 * 1024 * 1024, files: 200 }
 });
 
@@ -660,7 +661,9 @@ router.get('/:id/file/:index', (req, res) => {
     const file = entry.files[idx];
     if (!file) return res.status(400).json({ error: 'Invalid file index' });
 
-    res.sendFile(file.path, { headers: { 'Content-Disposition': `attachment; filename="${path.basename(file.relativePath)}"` } }, (err) => {
+    // res.attachment() encodes the name (ASCII fallback + RFC 5987 filename*); a raw non-ASCII name in the header made Node throw and crash the process
+    res.attachment(path.basename(file.relativePath));
+    res.sendFile(file.path, (err) => {
         if (err) return;
         requestLogger.logEvent(req, 'protected_file_download', { shareId: entry.id, fileIndex: idx, relativePath: file.relativePath });
     });

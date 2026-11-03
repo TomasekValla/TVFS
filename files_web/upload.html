@@ -296,6 +296,40 @@
         }
         .upload-area.recorder-open { min-height: 380px; }
         .upload-area.capture-open { min-height: 300px; }
+        .upload-area.recorder-review { min-height: 420px; }
+        /* ── Voice recorder (Create mode; same layout as the naTiVeFS app) ── */
+        .voice-panel {
+            position: absolute; inset: 0; z-index: 20; border-radius: 22px; padding: 20px;
+            display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px;
+            background: rgba(3, 7, 10, 0.72); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+            opacity: 0; transition: opacity 0.22s ease; cursor: default;
+        }
+        .voice-panel.on { opacity: 1; }
+        .voice-status { display: flex; align-items: center; gap: 8px; color: var(--text-secondary); font-size: 0.85rem; font-weight: 600; text-align: center; }
+        .voice-status.error { color: var(--status-bad, #ff6b6b); }
+        .voice-dot { display: none; width: 10px; height: 10px; border-radius: 50%; background: #ff4d4d; flex-shrink: 0; }
+        .voice-status.recording .voice-dot { display: inline-block; }
+        .voice-time { font-size: 1.8rem; font-weight: 800; color: #fff; font-variant-numeric: tabular-nums; }
+        .voice-wave { display: flex; align-items: center; justify-content: space-between; width: min(280px, 100%); height: 56px; }
+        .voice-wave.seekable { cursor: pointer; }
+        .voice-bar {
+            width: 4px; height: 4px; border-radius: 2px; background: var(--text-secondary); opacity: 0.55;
+            transition: height 0.07s linear, background-color 0.15s, opacity 0.15s;
+        }
+        .voice-bar.rec { background: #ff4d4d; }
+        .voice-bar.played { background: var(--accent-secondary); opacity: 1; }
+        .voice-row { display: flex; gap: 12px; width: 100%; max-width: 320px; }
+        .voice-row:empty { display: none; }
+        .voice-btn {
+            flex: 1; border-radius: 14px; padding: 12px 16px; font-size: 0.88rem; font-weight: 700; cursor: pointer;
+            background: var(--glass-bg); border: 1px solid var(--glass-border); color: #fff; transition: background 0.15s, transform 0.45s var(--spring, cubic-bezier(.34,1.7,.5,1));
+        }
+        .voice-btn:hover { background: var(--glass-border); }
+        .voice-btn.primary { background: #ff4d4d; border-color: #ff4d4d; color: #fff; }
+        .voice-btn.primary:hover { background: #e04343; }
+        .voice-btn:active { transform: scale(0.96); transition-duration: 0.07s; }
+        .voice-cancel { background: none; border: none; color: var(--text-secondary); font-size: 0.8rem; cursor: pointer; }
+        .voice-cancel:hover { color: #fff; }
 
         .upload-icon { font-size: 2.5rem; margin-bottom: 12px; opacity: 0.8; filter: drop-shadow(0 0 10px rgba(47, 255, 196, 0.2)); }
         .upload-text { color: var(--text-main); font-weight: 700; font-size: 0.95rem; margin-bottom: 4px; max-width: 90%; margin-left: auto; margin-right: auto; }
@@ -4883,115 +4917,174 @@
             if (els.uploadAreaInner) els.uploadAreaInner.classList.add('hidden');
             els.dropZone.classList.add('recorder-open');
 
+            // Same layout as the naTiVeFS app: status, timer, waveform (live while recording, the whole take in review),
+            // buttons, Cancel. The take plays back through our own controls (play / pause, click the waveform to seek).
             var panel = document.createElement('div');
             panel.id = 'voiceRecorder';
-            panel.style.cssText = [
-                'position:absolute', 'inset:0', 'display:flex', 'flex-direction:column',
-                'align-items:center', 'justify-content:center', 'gap:16px',
-                'background:rgba(3,7,10,0.72)', 'backdrop-filter:blur(8px)',
-                '-webkit-backdrop-filter:blur(8px)', 'border-radius:22px', 'z-index:20',
-                'padding:20px', 'opacity:0', 'transition:opacity 0.22s ease'
-            ].join(';');
+            panel.className = 'voice-panel';
+            panel.innerHTML =
+                '<div class="voice-status"><span class="voice-dot"></span><span class="voice-status-text">Requesting microphone…</span></div>' +
+                '<div class="voice-time">0:00</div>' +
+                '<div class="voice-wave" aria-hidden="true"></div>' +
+                '<div class="voice-row voice-row-main"></div>' +
+                '<div class="voice-row voice-row-review"></div>' +
+                '<button class="voice-cancel" type="button">Cancel</button>';
+            var statusEl = panel.querySelector('.voice-status');
+            var statusText = panel.querySelector('.voice-status-text');
+            var timerEl = panel.querySelector('.voice-time');
+            var waveEl = panel.querySelector('.voice-wave');
+            var rowMain = panel.querySelector('.voice-row-main');
+            var rowReview = panel.querySelector('.voice-row-review');
+            var cancelBtn = panel.querySelector('.voice-cancel');
 
-            var statusLabel = document.createElement('div');
-            statusLabel.style.cssText = 'color:var(--text-secondary);font-size:0.85rem;font-weight:600;';
-            statusLabel.textContent = 'Requesting microphone…';
-
-            var timerEl = document.createElement('div');
-            timerEl.style.cssText = 'font-size:1.8rem;font-weight:800;color:var(--text-main);font-variant-numeric:tabular-nums;';
-            timerEl.textContent = '0:00';
-
-            var recDot = document.createElement('span');
-            recDot.style.cssText = 'display:inline-block;width:10px;height:10px;border-radius:50%;background:#ff4d4d;margin-right:8px;vertical-align:middle;';
-
-            var btnRow = document.createElement('div');
-            btnRow.style.cssText = 'display:flex;gap:12px;width:100%;max-width:320px;';
+            var BARS = 40;
+            var bars = [];
+            for (var i = 0; i < BARS; i++) {
+                var b = document.createElement('span');
+                b.className = 'voice-bar';
+                waveEl.appendChild(b);
+                bars.push(b);
+            }
+            var levels = new Array(BARS).fill(0.08);
 
             function makeBtn(label, primary) {
                 var b = document.createElement('button');
+                b.type = 'button';
+                b.className = 'voice-btn' + (primary ? ' primary' : '');
                 b.textContent = label;
-                b.style.cssText = [
-                    'flex:1', 'border-radius:14px', 'padding:12px 16px', 'font-size:0.88rem',
-                    'font-weight:700', 'cursor:pointer',
-                    primary
-                        ? 'background:#ff4d4d;border:1px solid #ff4d4d;color:#fff;'
-                        : 'background:var(--glass-bg);border:1px solid var(--glass-border);color:var(--text-main);'
-                ].join(';');
                 return b;
             }
-
             var startBtn = makeBtn('● Start recording', true);
             var stopBtn = makeBtn('■ Stop', true);
+            var listenBtn = makeBtn('▶ Listen', false);
             var useBtn = makeBtn('✓ Use recording', true);
             var discardBtn = makeBtn('Discard & retry', false);
-            var cancelBtn = document.createElement('button');
-            cancelBtn.textContent = 'Cancel';
-            cancelBtn.style.cssText = 'background:none;border:none;color:var(--text-secondary);font-size:0.8rem;cursor:pointer;';
-
-            panel.appendChild(statusLabel);
-            panel.appendChild(timerEl);
-            panel.appendChild(btnRow);
-            panel.appendChild(cancelBtn);
 
             els.dropZone.style.position = 'relative';
             els.dropZone.appendChild(panel);
             requestAnimationFrame(function() {
-                requestAnimationFrame(function() { panel.style.opacity = '1'; });
+                requestAnimationFrame(function() { panel.classList.add('on'); });
             });
 
-            var stream = null, recorder = null, chunks = [], timerInterval = null, startedAt = 0, audioEl = null;
+            var stream = null, recorder = null, chunks = [], timerInterval = null, startedAt = 0;
+            var ctx = null, analyser = null, levelTimer = null, sampleBuf = null;
+            var audioEl = null, audioUrl = null, take = null, duration = 0, raf = 0;
 
             function fmtTimer(sec) {
                 var m = Math.floor(sec / 60), s = Math.floor(sec % 60);
                 return m + ':' + String(s).padStart(2, '0');
             }
+            // a peak (0..1) as a bar height: decibels over a 50 dB range, so quiet speech still shows
+            function barHeight(peak) {
+                var db = 20 * Math.log10(Math.max(peak, 1e-6));
+                return Math.min(1, Math.max(0.08, (db + 50) / 50));
+            }
+            function drawBars(mode, progress) {
+                for (var i = 0; i < BARS; i++) {
+                    bars[i].style.height = Math.max(4, Math.round(levels[i] * 56)) + 'px';
+                    var played = mode === 'review' && (i + 0.5) / BARS <= progress;
+                    bars[i].className = 'voice-bar' + (mode === 'rec' ? ' rec' : played ? ' played' : '');
+                    bars[i].style.opacity = mode === 'rec' ? (0.55 + 0.45 * levels[i]).toFixed(2) : '';
+                }
+            }
+            function setStatus(text, opts) {
+                statusText.textContent = text;
+                statusEl.classList.toggle('recording', !!(opts && opts.recording));
+                statusEl.classList.toggle('error', !!(opts && opts.error));
+            }
+            function setRows(main, review) {
+                rowMain.innerHTML = '';
+                rowReview.innerHTML = '';
+                main.forEach(function(b) { rowMain.appendChild(b); });
+                review.forEach(function(b) { rowReview.appendChild(b); });
+                rowReview.style.display = review.length ? '' : 'none';
+            }
 
+            function stopLevels() {
+                if (levelTimer) { clearInterval(levelTimer); levelTimer = null; }
+            }
             function stopTracks() {
+                stopLevels();
                 if (stream) stream.getTracks().forEach(function(t) { t.stop(); });
                 stream = null;
+                if (ctx) { ctx.close().catch(function() {}); ctx = null; }
+            }
+            function stopPlayback() {
+                if (raf) { cancelAnimationFrame(raf); raf = 0; }
+                if (audioEl) { audioEl.pause(); }
+            }
+            function dropTake() {
+                stopPlayback();
+                if (audioEl) { audioEl.removeAttribute('src'); audioEl = null; }
+                if (audioUrl) { URL.revokeObjectURL(audioUrl); audioUrl = null; }
+                take = null;
+                duration = 0;
             }
 
             function closePanel() {
                 if (timerInterval) clearInterval(timerInterval);
                 stopTracks();
-                if (audioEl) { audioEl.pause(); audioEl = null; }
-                panel.style.opacity = '0';
+                dropTake();
+                panel.classList.remove('on');
                 if (els.uploadAreaInner) els.uploadAreaInner.classList.remove('hidden');
-                els.dropZone.classList.remove('recorder-open');
+                els.dropZone.classList.remove('recorder-open', 'recorder-review');
                 if (activeCreateOverlayClose === closePanel) activeCreateOverlayClose = null;
                 setTimeout(function() { panel.remove(); }, 220);
             }
             activeCreateOverlayClose = closePanel;
-
             cancelBtn.addEventListener('click', function(e) { e.stopPropagation(); closePanel(); });
+            panel.addEventListener('click', function(e) { e.stopPropagation(); });
 
             function showStartState() {
-                btnRow.innerHTML = '';
-                btnRow.appendChild(startBtn);
-                statusLabel.textContent = 'Ready when you are';
+                els.dropZone.classList.remove('recorder-review');
+                levels.fill(0.08);
+                drawBars('idle', 0);
+                waveEl.classList.remove('seekable');
+                setRows([startBtn], []);
+                setStatus('Ready when you are');
                 timerEl.textContent = '0:00';
             }
 
             function showRecordingState() {
-                btnRow.innerHTML = '';
-                btnRow.appendChild(stopBtn);
-                statusLabel.innerHTML = '';
-                statusLabel.appendChild(recDot);
-                statusLabel.appendChild(document.createTextNode('Recording…'));
+                setRows([stopBtn], []);
+                setStatus('Recording…', { recording: true });
             }
 
+            // review: the whole take as bars, our own play / pause + seek on the waveform
             function showReviewState(blob, mime) {
-                btnRow.innerHTML = '';
-                btnRow.appendChild(useBtn);
-                btnRow.appendChild(discardBtn);
-                statusLabel.textContent = 'Recording ready — listen back or use it';
-
-                if (audioEl) { audioEl.pause(); audioEl = null; }
-                audioEl = document.createElement('audio');
-                audioEl.controls = true;
-                audioEl.style.cssText = 'width:100%;max-width:320px;';
-                audioEl.src = URL.createObjectURL(blob);
-                panel.insertBefore(audioEl, btnRow);
+                take = { blob: blob, mime: mime };
+                els.dropZone.classList.add('recorder-review');
+                setRows([listenBtn], [useBtn, discardBtn]);
+                setStatus('Recording ready — listen back or use it');
+                listenBtn.textContent = '▶ Listen';
+                waveEl.classList.add('seekable');
+                audioUrl = URL.createObjectURL(blob);
+                audioEl = new Audio(audioUrl);
+                audioEl.preload = 'auto';
+                audioEl.addEventListener('ended', function() {
+                    stopPlayback();
+                    audioEl.currentTime = 0;
+                    listenBtn.textContent = '▶ Listen';
+                    showPosition(0);
+                });
+                // WebM from MediaRecorder often reports no duration: decode it for the length and the waveform
+                duration = (Date.now() - startedAt) / 1000;
+                showPosition(0);
+                blob.arrayBuffer().then(function(buf) {
+                    var dctx = new (window.AudioContext || window.webkitAudioContext)();
+                    return dctx.decodeAudioData(buf).then(function(audio) {
+                        dctx.close().catch(function() {});
+                        if (!take || take.blob !== blob) return;
+                        duration = audio.duration;
+                        var data = audio.getChannelData(0), n = data.length;
+                        for (var i = 0; i < BARS; i++) {
+                            var a = Math.floor(i * n / BARS), z = Math.max(a + 1, Math.floor((i + 1) * n / BARS)), peak = 0;
+                            for (var j = a; j < z; j++) { var v = Math.abs(data[j]); if (v > peak) peak = v; }
+                            levels[i] = barHeight(peak);
+                        }
+                        showPosition(audioEl ? audioEl.currentTime : 0);
+                    });
+                }).catch(function() { /* keeps the live bars of the last seconds */ });
 
                 useBtn.onclick = function(e) {
                     e.stopPropagation();
@@ -5003,11 +5096,44 @@
                 };
                 discardBtn.onclick = function(e) {
                     e.stopPropagation();
-                    if (audioEl) { audioEl.remove(); audioEl = null; }
+                    dropTake();
                     chunks = [];
                     showStartState();
                 };
             }
+
+            function showPosition(t) {
+                var p = duration > 0 ? Math.min(1, t / duration) : 0;
+                drawBars('review', p);
+                timerEl.textContent = fmtTimer(t) + ' / ' + fmtTimer(Math.round(duration));
+            }
+            function follow() {
+                if (!audioEl || audioEl.paused) { raf = 0; return; }
+                showPosition(audioEl.currentTime);
+                raf = requestAnimationFrame(follow);
+            }
+            function play() {
+                if (!audioEl) return;
+                audioEl.play().then(function() {
+                    listenBtn.textContent = 'Pause';
+                    if (!raf) raf = requestAnimationFrame(follow);
+                }).catch(function(err) { setStatus('Cannot play the recording: ' + err.message, { error: true }); });
+            }
+            listenBtn.addEventListener('click', function(e) {
+                e.stopPropagation();
+                if (!audioEl) return;
+                if (audioEl.paused) play();
+                else { stopPlayback(); listenBtn.textContent = '▶ Listen'; showPosition(audioEl.currentTime); }
+            });
+            waveEl.addEventListener('click', function(e) {
+                e.stopPropagation();
+                if (!audioEl || !duration) return;
+                var r = waveEl.getBoundingClientRect();
+                var f = Math.min(1, Math.max(0, (e.clientX - r.left) / r.width));
+                audioEl.currentTime = f * duration;
+                showPosition(audioEl.currentTime);
+                play();
+            });
 
             startBtn.addEventListener('click', function(e) {
                 e.stopPropagation();
@@ -5022,14 +5148,28 @@
                 recorder.ondataavailable = function(ev) { if (ev.data && ev.data.size > 0) chunks.push(ev.data); };
                 recorder.onstop = function() {
                     if (timerInterval) clearInterval(timerInterval);
+                    stopLevels();
                     var blob = new Blob(chunks, { type: recorder.mimeType || mime || 'audio/webm' });
                     showReviewState(blob, recorder.mimeType || mime);
                 };
                 recorder.start();
                 startedAt = Date.now();
+                levels.fill(0.08);
+                drawBars('rec', 0);
                 timerInterval = setInterval(function() {
                     timerEl.textContent = fmtTimer((Date.now() - startedAt) / 1000);
                 }, 250);
+                // live waveform: the newest peak enters on the right every 50 ms
+                if (analyser) {
+                    levelTimer = setInterval(function() {
+                        analyser.getFloatTimeDomainData(sampleBuf);
+                        var peak = 0;
+                        for (var i = 0; i < sampleBuf.length; i++) { var v = Math.abs(sampleBuf[i]); if (v > peak) peak = v; }
+                        levels.shift();
+                        levels.push(barHeight(peak));
+                        drawBars('rec', 0);
+                    }, 50);
+                }
                 showRecordingState();
             });
 
@@ -5038,13 +5178,22 @@
                 if (recorder && recorder.state !== 'inactive') recorder.stop();
             });
 
+            setRows([], []);
+            drawBars('idle', 0);
             navigator.mediaDevices.getUserMedia({ audio: true }).then(function(s) {
                 stream = s;
+                try {
+                    ctx = new (window.AudioContext || window.webkitAudioContext)();
+                    analyser = ctx.createAnalyser();
+                    analyser.fftSize = 2048;
+                    sampleBuf = new Float32Array(analyser.fftSize);
+                    ctx.createMediaStreamSource(s).connect(analyser);
+                } catch (err) { analyser = null; }
                 showStartState();
             }).catch(function(err) {
-                statusLabel.textContent = 'Microphone access denied or unavailable.';
+                setStatus('Microphone access denied or unavailable.', { error: true });
                 showError('Could not access microphone: ' + err.message);
-                btnRow.innerHTML = '';
+                setRows([], []);
             });
         }
 

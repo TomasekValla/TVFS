@@ -294,9 +294,9 @@
         .upload-area.mode-switching {
             animation: dropzone-in 0.28s cubic-bezier(0.22, 1, 0.36, 1) both;
         }
-        .upload-area.recorder-open { min-height: 380px; }
+        .upload-area.recorder-open { min-height: 440px; }
         .upload-area.capture-open { min-height: 300px; }
-        .upload-area.recorder-review { min-height: 420px; }
+        .upload-area.recorder-review { min-height: 460px; }
         /* ── Voice recorder (Create mode; same layout as the naTiVeFS app) ── */
         .voice-panel {
             position: absolute; inset: 0; z-index: 20; border-radius: 22px; padding: 20px;
@@ -328,6 +328,18 @@
         .voice-btn.primary { background: #ff4d4d; border-color: #ff4d4d; color: #fff; }
         .voice-btn.primary:hover { background: #e04343; }
         .voice-btn:active { transform: scale(0.96); transition-duration: 0.07s; }
+        .voice-format { display: flex; flex-direction: column; align-items: center; gap: 6px; max-width: 100%; }
+        .voice-format:empty { display: none; }
+        .voice-format .tri-switch { max-width: 100%; overflow-x: auto; }
+        .voice-format .tri-btn { padding: 6px 11px; white-space: nowrap; color: rgba(255,255,255,0.72); }
+        .voice-format .tri-btn.active { color: #fff; }
+        .voice-format .tri-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+        @media (max-width: 420px) { .voice-format .tri-btn { padding: 6px 7px; font-size: 0.64rem; letter-spacing: 0; } }
+        .voice-format-note { color: rgba(255,255,255,0.6); font-size: 0.72rem; text-align: center; }
+        .voice-format-note.dim { color: rgba(255,255,255,0.38); font-size: 0.66rem; margin-top: -3px; }
+        .voice-cleanup { display: flex; align-items: center; gap: 5px; cursor: pointer; color: rgba(255,255,255,0.4); font-size: 0.66rem; }
+        .voice-cleanup:hover { color: rgba(255,255,255,0.7); }
+        .voice-cleanup input { margin: 0; width: 11px; height: 11px; accent-color: var(--accent-secondary); cursor: pointer; }
         .voice-cancel { background: none; border: none; color: var(--text-secondary); font-size: 0.8rem; cursor: pointer; }
         .voice-cancel:hover { color: #fff; }
 
@@ -4887,28 +4899,207 @@
         }
 
         // Voice note recorder (shown inside the drop zone from the Create menu)
-        function pickRecorderMime() {
-            var candidates = [
-                'audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus', 'audio/ogg', 'audio/mp4'
-            ];
-            for (var i = 0; i < candidates.length; i++) {
-                if (window.MediaRecorder && MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(candidates[i])) {
-                    return candidates[i];
-                }
+        // Formats like the naTiVeFS app. The browser's MediaRecorder encodes Opus / AAC while recording (so the choice
+        // is made before Start); FLAC is encoded here from the raw microphone samples.
+        var AAC_MIMES = ['audio/mp4;codecs=mp4a.40.2', 'audio/mp4;codecs=aac', 'audio/mp4'];
+        var VOICE_FORMATS = [
+            { id: 'opus', label: 'Opus', bits: 128000, mimes: ['audio/ogg;codecs=opus', 'audio/webm;codecs=opus'], note: 'Opus 128 kbit/s · small, plays in every browser' },
+            { id: 'aac96', label: 'AAC 96', bits: 96000, mimes: AAC_MIMES, note: 'AAC 96 kbit/s · M4A, plays everywhere' },
+            { id: 'aac160', label: 'AAC 160', bits: 160000, mimes: AAC_MIMES, note: 'AAC 160 kbit/s · M4A, plays everywhere' },
+            { id: 'aac192', label: 'AAC 192', bits: 192000, mimes: AAC_MIMES, note: 'AAC 192 kbit/s · M4A, plays everywhere' },
+            { id: 'flac', label: 'FLAC', pcm: true, note: 'FLAC · lossless, the biggest file' }
+        ];
+        var VOICE_MAX_PCM_SECONDS = 30 * 60; // raw samples are kept in memory until Stop (like the app)
+        var PCM_WORKLET = "registerProcessor('tvfs-pcm', class extends AudioWorkletProcessor {" +
+            "constructor() { super(); this.b = []; this.n = 0; this.port.onmessage = () => {" +
+            " this.port.postMessage(this.b); this.b = []; this.n = 0; this.port.postMessage('end'); }; }" +
+            "process(inputs) { const c = inputs[0]; if (c && c.length) { this.b.push(c.map(a => a.slice())); this.n += c[0].length;" +
+            " if (this.n >= 4096) { this.port.postMessage(this.b); this.b = []; this.n = 0; } } return true; } });";
+
+        // the MIME type this browser records the format in, '' = not available here
+        function voiceFormatMime(f) {
+            if (f.pcm) {
+                var AC = window.AudioContext || window.webkitAudioContext;
+                return AC && (window.AudioWorkletNode || AC.prototype.createScriptProcessor) ? 'audio/flac' : '';
             }
-            return ''; // let the browser pick a default
+            if (!window.MediaRecorder || !MediaRecorder.isTypeSupported) return '';
+            for (var i = 0; i < f.mimes.length; i++) if (MediaRecorder.isTypeSupported(f.mimes[i])) return f.mimes[i];
+            return '';
         }
 
         function extFromRecorderMime(mime) {
             if (!mime) return '.webm';
             if (mime.indexOf('ogg') !== -1) return '.ogg';
             if (mime.indexOf('mp4') !== -1) return '.m4a';
+            if (mime.indexOf('flac') !== -1) return '.flac';
             return '.webm';
+        }
+
+        // Small FLAC encoder for 16-bit PCM: fixed predictors (order 0-4), Rice-coded residuals with partitions,
+        // stereo as independent / left-side / right-side, whichever is smallest. Yields to the page between blocks.
+        var flacCrc = (function() {
+            var c8 = new Uint8Array(256), c16 = new Uint16Array(256);
+            for (var i = 0; i < 256; i++) {
+                var a = i, b = i << 8;
+                for (var j = 0; j < 8; j++) {
+                    a = (a & 0x80) ? ((a << 1) ^ 0x07) & 0xff : (a << 1) & 0xff;
+                    b = (b & 0x8000) ? ((b << 1) ^ 0x8005) & 0xffff : (b << 1) & 0xffff;
+                }
+                c8[i] = a; c16[i] = b;
+            }
+            return { c8: c8, c16: c16 };
+        })();
+
+        function FlacBits(size) { this.buf = new Uint8Array(size); this.pos = 0; this.acc = 0; this.n = 0; }
+        FlacBits.prototype.write = function(v, bits) { // bits <= 24
+            this.acc = (this.acc << bits) | (v & ((1 << bits) - 1));
+            this.n += bits;
+            while (this.n >= 8) {
+                this.n -= 8;
+                if (this.pos >= this.buf.length) { var nb = new Uint8Array(this.buf.length * 2); nb.set(this.buf); this.buf = nb; }
+                this.buf[this.pos++] = (this.acc >>> this.n) & 0xff;
+                this.acc &= (1 << this.n) - 1;
+            }
+        };
+        FlacBits.prototype.align = function() { if (this.n) this.write(0, 8 - this.n); };
+        FlacBits.prototype.rice = function(u, k) {
+            var q = u >>> k;
+            if (q + 1 + k <= 24) { this.write((1 << k) | (u & ((1 << k) - 1)), q + 1 + k); return; }
+            while (q > 24) { this.write(0, 24); q -= 24; }
+            this.write(1, q + 1);
+            if (k > 16) { this.write(u >>> 16 & ((1 << (k - 16)) - 1), k - 16); this.write(u & 0xffff, 16); }
+            else if (k) this.write(u & ((1 << k) - 1), k);
+        };
+
+        function flacRiceParam(sum, count) { // estimated best parameter and bits for `count` zigzag values summing to `sum`
+            var best = 0, bestBits = Infinity;
+            for (var k = 0; k <= 30; k++) {
+                var bits = count * (k + 1) + Math.floor(sum / Math.pow(2, k));
+                if (bits < bestBits) { bestBits = bits; best = k; } else break;
+            }
+            return { k: best, bits: bestBits };
+        }
+
+        function flacPlan(x, n, bps, res) { // choose how to code one channel of one block
+            var same = true;
+            for (var i = 1; i < n; i++) if (x[i] !== x[0]) { same = false; break; }
+            if (same) return { type: 'const', bits: 8 + bps };
+            var sums = [0, 0, 0, 0, 0];
+            for (i = 4; i < n; i++) {
+                var e0 = x[i], e1 = e0 - x[i - 1], e2 = e1 - (x[i - 1] - x[i - 2]);
+                var e3 = e2 - (x[i - 1] - 2 * x[i - 2] + x[i - 3]), e4 = e3 - (x[i - 1] - 3 * x[i - 2] + 3 * x[i - 3] - x[i - 4]);
+                sums[0] += Math.abs(e0); sums[1] += Math.abs(e1); sums[2] += Math.abs(e2); sums[3] += Math.abs(e3); sums[4] += Math.abs(e4);
+            }
+            var order = 0;
+            for (i = 1; i <= 4 && i < n; i++) if (sums[i] < sums[order]) order = i;
+            var u = new Uint32Array(n);
+            for (i = order; i < n; i++) {
+                var r = order === 0 ? x[i] : order === 1 ? x[i] - x[i - 1] : order === 2 ? x[i] - 2 * x[i - 1] + x[i - 2]
+                    : order === 3 ? x[i] - 3 * x[i - 1] + 3 * x[i - 2] - x[i - 3] : x[i] - 4 * x[i - 1] + 6 * x[i - 2] - 4 * x[i - 3] + x[i - 4];
+                u[i] = r >= 0 ? 2 * r : -2 * r - 1;
+            }
+            var maxP = 0;
+            while (maxP < 8 && n % (1 << (maxP + 1)) === 0 && (n >> (maxP + 1)) > order) maxP++;
+            var parts = [], size = n >> maxP;
+            for (var p = 0; p < (1 << maxP); p++) {
+                var s = 0, a = p === 0 ? order : p * size, z = (p + 1) * size;
+                for (i = a; i < z; i++) s += u[i];
+                parts.push({ sum: s, count: z - a });
+            }
+            var best = null;
+            for (var po = maxP; po >= 0; po--) {
+                var ks = [], bits = 6;
+                for (p = 0; p < parts.length; p++) { var rp = flacRiceParam(parts[p].sum, parts[p].count); ks.push(rp.k); bits += rp.bits; }
+                var wide = ks.some(function(k) { return k > 14; });
+                bits += parts.length * (wide ? 5 : 4);
+                if (!best || bits < best.rbits) best = { porder: po, ks: ks, wide: wide, rbits: bits };
+                var up = [];
+                for (p = 0; p + 1 < parts.length; p += 2) up.push({ sum: parts[p].sum + parts[p + 1].sum, count: parts[p].count + parts[p + 1].count });
+                parts = up;
+            }
+            var total = 8 + order * bps + best.rbits;
+            if (total >= 8 + n * bps) return { type: 'verbatim', bits: 8 + n * bps };
+            return { type: 'fixed', order: order, u: u, porder: best.porder, ks: best.ks, wide: best.wide, bits: total };
+        }
+
+        function flacWriteSub(w, x, n, bps, plan) {
+            if (plan.type === 'const') { w.write(0, 8); w.write(x[0], bps); return; }
+            if (plan.type === 'verbatim') { w.write(2, 8); for (var i = 0; i < n; i++) w.write(x[i], bps); return; }
+            w.write((8 + plan.order) << 1, 8);
+            for (i = 0; i < plan.order; i++) w.write(x[i], bps);
+            w.write(plan.wide ? 1 : 0, 2);
+            w.write(plan.porder, 4);
+            var parts = 1 << plan.porder, size = n >> plan.porder;
+            for (var p = 0; p < parts; p++) {
+                var k = plan.ks[p];
+                w.write(k, plan.wide ? 5 : 4);
+                for (i = p === 0 ? plan.order : p * size; i < (p + 1) * size; i++) w.rice(plan.u[i], k);
+            }
+        }
+
+        // channels: Int16Array per channel (1 or 2), same length. Resolves to a Blob of audio/flac.
+        function encodeFlac(channels, rate, onProgress) {
+            var nch = channels.length, total = channels[0].length, BLOCK = 4096;
+            var w = new FlacBits(Math.max(65536, total * nch + 4096));
+            [0x66, 0x4c, 0x61, 0x43, 0x80, 0, 0, 34].forEach(function(b) { w.write(b, 8); });
+            w.write(BLOCK, 16); w.write(BLOCK, 16); w.write(0, 24); w.write(0, 24);
+            w.write(rate >>> 4, 16); w.write(rate & 15, 4); w.write(nch - 1, 3); w.write(15, 5);
+            w.write(Math.floor(total / 4294967296), 4); w.write(total >>> 16, 16); w.write(total & 0xffff, 16);
+            for (var m = 0; m < 16; m++) w.write(0, 8); // MD5 unknown (allowed)
+            var RATES = { 88200: 1, 176400: 2, 192000: 3, 8000: 4, 16000: 5, 22050: 6, 24000: 7, 32000: 8, 44100: 9, 48000: 10, 96000: 11 };
+            var srCode = RATES[rate] || 0;
+            var L = new Int32Array(BLOCK), R = new Int32Array(BLOCK), S = new Int32Array(BLOCK);
+            var frame = 0, offset = 0;
+            return new Promise(function(resolve) {
+                function step() {
+                    var until = Date.now() + 30;
+                    while (offset < total && Date.now() < until) {
+                        var n = Math.min(BLOCK, total - offset);
+                        for (var i = 0; i < n; i++) {
+                            L[i] = channels[0][offset + i];
+                            if (nch === 2) { R[i] = channels[1][offset + i]; S[i] = L[i] - R[i]; }
+                        }
+                        var start = w.pos, chan, subs;
+                        if (nch === 1) { chan = 0; subs = [[L, 16, flacPlan(L, n, 16)]]; }
+                        else {
+                            var pl = flacPlan(L, n, 16), pr = flacPlan(R, n, 16), ps = flacPlan(S, n, 17);
+                            var ind = pl.bits + pr.bits, ls = pl.bits + ps.bits, rs = ps.bits + pr.bits;
+                            if (ind <= ls && ind <= rs) { chan = 1; subs = [[L, 16, pl], [R, 16, pr]]; }
+                            else if (ls <= rs) { chan = 8; subs = [[L, 16, pl], [S, 17, ps]]; }
+                            else { chan = 9; subs = [[S, 17, ps], [R, 16, pr]]; }
+                        }
+                        w.write(0xfff8, 16);
+                        w.write((7 << 4) | srCode, 8);
+                        w.write((chan << 4) | (4 << 1), 8);
+                        if (frame < 0x80) w.write(frame, 8);
+                        else {
+                            var extra = frame < 0x800 ? 1 : frame < 0x10000 ? 2 : frame < 0x200000 ? 3 : 4;
+                            w.write((0xff00 >> (extra + 1)) & 0xff | (frame >>> (6 * extra)), 8);
+                            for (var e = extra - 1; e >= 0; e--) w.write(0x80 | ((frame >>> (6 * e)) & 0x3f), 8);
+                        }
+                        w.write(n - 1, 16);
+                        var crc = 0;
+                        for (i = start; i < w.pos; i++) crc = flacCrc.c8[crc ^ w.buf[i]];
+                        w.write(crc, 8);
+                        subs.forEach(function(sb) { flacWriteSub(w, sb[0], n, sb[1], sb[2]); });
+                        w.align();
+                        crc = 0;
+                        for (i = start; i < w.pos; i++) crc = ((crc << 8) & 0xffff) ^ flacCrc.c16[(crc >> 8) ^ w.buf[i]];
+                        w.write(crc, 16);
+                        offset += n;
+                        frame++;
+                    }
+                    if (onProgress && onProgress(total ? offset / total : 1) === false) { resolve(null); return; }
+                    if (offset < total) setTimeout(step, 0);
+                    else resolve(new Blob([w.buf.subarray(0, w.pos)], { type: 'audio/flac' }));
+                }
+                step();
+            });
         }
 
         function showVoiceRecorder() {
             if (document.getElementById('voiceRecorder')) return;
-            if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || !window.MediaRecorder) {
+            if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
                 showError('Voice recording is not supported in this browser.');
                 return;
             }
@@ -4926,6 +5117,7 @@
                 '<div class="voice-status"><span class="voice-dot"></span><span class="voice-status-text">Requesting microphone…</span></div>' +
                 '<div class="voice-time">0:00</div>' +
                 '<div class="voice-wave" aria-hidden="true"></div>' +
+                '<div class="voice-format"></div>' +
                 '<div class="voice-row voice-row-main"></div>' +
                 '<div class="voice-row voice-row-review"></div>' +
                 '<button class="voice-cancel" type="button">Cancel</button>';
@@ -4933,9 +5125,78 @@
             var statusText = panel.querySelector('.voice-status-text');
             var timerEl = panel.querySelector('.voice-time');
             var waveEl = panel.querySelector('.voice-wave');
+            var formatEl = panel.querySelector('.voice-format');
             var rowMain = panel.querySelector('.voice-row-main');
             var rowReview = panel.querySelector('.voice-row-review');
             var cancelBtn = panel.querySelector('.voice-cancel');
+
+            // format picker (remembered); greyed out = this browser cannot record it
+            var formatMimes = VOICE_FORMATS.map(voiceFormatMime);
+            var formatIdx = VOICE_FORMATS.findIndex(function(f) { return f.id === localStorage.getItem('tvfs_voice_format'); });
+            function fixFormatIdx() {
+                if (formatIdx < 0 || !formatMimes[formatIdx]) formatIdx = formatMimes.findIndex(function(m) { return !!m; });
+            }
+            fixFormatIdx();
+            function renderFormatPicker() {
+                formatEl.innerHTML = '';
+                if (formatIdx < 0) return;
+                var sw = document.createElement('div');
+                sw.className = 'tri-switch';
+                var note = document.createElement('div');
+                note.className = 'voice-format-note';
+                note.textContent = VOICE_FORMATS[formatIdx].note;
+                VOICE_FORMATS.forEach(function(f, i) {
+                    var b = document.createElement('button');
+                    b.type = 'button';
+                    b.className = 'tri-btn' + (i === formatIdx ? ' active' : '');
+                    b.textContent = f.label;
+                    if (!formatMimes[i]) {
+                        b.disabled = true;
+                        b.title = f.label + ' cannot be recorded in this browser';
+                    }
+                    b.addEventListener('click', function(e) {
+                        e.stopPropagation();
+                        formatIdx = i;
+                        localStorage.setItem('tvfs_voice_format', f.id);
+                        renderFormatPicker();
+                    });
+                    sw.appendChild(b);
+                });
+                formatEl.appendChild(sw);
+                formatEl.appendChild(note);
+                if (formatMimes.some(function(m) { return !m; })) {
+                    var hint = document.createElement('div');
+                    hint.className = 'voice-format-note dim';
+                    hint.textContent = 'Greyed out: this browser cannot record that format';
+                    formatEl.appendChild(hint);
+                }
+                var clean = document.createElement('label');
+                clean.className = 'voice-cleanup';
+                clean.title = "The browser's noise suppression, echo cancellation and automatic gain. "
+                    + 'Helps speech in noisy rooms or on speaker; off = the raw microphone (better for music and quiet rooms).';
+                var box = document.createElement('input');
+                box.type = 'checkbox';
+                box.checked = cleanup;
+                clean.appendChild(box);
+                clean.appendChild(document.createTextNode('Browser noise & echo filter'));
+                clean.addEventListener('click', function(e) { e.stopPropagation(); });
+                box.addEventListener('change', function() {
+                    cleanup = box.checked;
+                    localStorage.setItem('tvfs_voice_cleanup', cleanup ? '1' : '0');
+                    stopTracks();
+                    openMic();
+                });
+                formatEl.appendChild(clean);
+            }
+            function renderFormatInfo(fmt, mime, size) {
+                formatEl.innerHTML = '';
+                var note = document.createElement('div');
+                note.className = 'voice-format-note';
+                var kind = fmt.pcm ? 'FLAC · lossless'
+                    : fmt.label.split(' ')[0] + ' ' + fmt.bits / 1000 + ' kbit/s · ' + extFromRecorderMime(mime).slice(1).toUpperCase();
+                note.textContent = kind + ' · ' + fmtBytes(size) + (cleanup ? ' · noise & echo filter' : '');
+                formatEl.appendChild(note);
+            }
 
             var BARS = 40;
             var bars = [];
@@ -4969,6 +5230,7 @@
             var stream = null, recorder = null, chunks = [], timerInterval = null, startedAt = 0;
             var ctx = null, analyser = null, levelTimer = null, sampleBuf = null;
             var audioEl = null, audioUrl = null, take = null, duration = 0, raf = 0;
+            var micSrc = null, pcm = null, pcmModule = null, autoStop = null, closed = false;
 
             function fmtTimer(sec) {
                 var m = Math.floor(sec / 60), s = Math.floor(sec % 60);
@@ -5022,7 +5284,10 @@
             }
 
             function closePanel() {
+                closed = true;
                 if (timerInterval) clearInterval(timerInterval);
+                if (autoStop) { clearTimeout(autoStop); autoStop = null; }
+                if (pcm) { pcm.node.disconnect(); pcm = null; }
                 stopTracks();
                 dropTake();
                 panel.classList.remove('on');
@@ -5041,18 +5306,22 @@
                 drawBars('idle', 0);
                 waveEl.classList.remove('seekable');
                 setRows([startBtn], []);
+                renderFormatPicker();
                 setStatus('Ready when you are');
                 timerEl.textContent = '0:00';
             }
 
             function showRecordingState() {
                 setRows([stopBtn], []);
+                formatEl.innerHTML = '';
                 setStatus('Recording…', { recording: true });
             }
 
             // review: the whole take as bars, our own play / pause + seek on the waveform
-            function showReviewState(blob, mime) {
+            function showReviewState(blob, mime, fmt) {
+                if (closed) return;
                 take = { blob: blob, mime: mime };
+                renderFormatInfo(fmt, mime, blob.size);
                 els.dropZone.classList.add('recorder-review');
                 setRows([listenBtn], [useBtn, discardBtn]);
                 setStatus('Recording ready — listen back or use it');
@@ -5090,7 +5359,8 @@
                     e.stopPropagation();
                     var ext = extFromRecorderMime(mime);
                     var name = 'voice-note-' + new Date().toISOString().replace(/[:.]/g, '-') + ext;
-                    var file = new File([blob], name, { type: mime || 'audio/webm' });
+                    // without the ";codecs=..." part: the server sorts files by the plain type
+                    var file = new File([blob], name, { type: (mime || 'audio/webm').split(';')[0] });
                     closePanel();
                     addFiles([file]);
                 };
@@ -5135,66 +5405,200 @@
                 play();
             });
 
+            // FLAC: the raw microphone samples (16 bit) are collected here and encoded after Stop
+            function startPcm(fmt) {
+                if (!ctx || !micSrc) throw new Error('audio capture is not available');
+                var got = { parts: [], frames: 0, rate: ctx.sampleRate, nch: 0 };
+                function push(chs) {
+                    if (!chs.length) return;
+                    if (!got.nch) got.nch = Math.min(2, chs.length);
+                    var n = chs[0].length, out = [];
+                    for (var c = 0; c < got.nch; c++) {
+                        var src = chs[Math.min(c, chs.length - 1)], d = new Int16Array(n);
+                        for (var i = 0; i < n; i++) {
+                            var v = src[i] < -1 ? -1 : src[i] > 1 ? 1 : src[i];
+                            d[i] = v < 0 ? Math.round(v * 32768) : Math.round(v * 32767);
+                        }
+                        out.push(d);
+                    }
+                    got.parts.push(out);
+                    got.frames += n;
+                }
+                var made;
+                if (window.AudioWorkletNode && ctx.audioWorklet) {
+                    if (!pcmModule) pcmModule = ctx.audioWorklet.addModule(URL.createObjectURL(new Blob([PCM_WORKLET], { type: 'text/javascript' })));
+                    made = pcmModule.then(function() {
+                        var node = new AudioWorkletNode(ctx, 'tvfs-pcm');
+                        node.port.onmessage = function(ev) {
+                            if (ev.data === 'end') { if (got.done) got.done(); }
+                            else ev.data.forEach(push);
+                        };
+                        return node;
+                    });
+                } else {
+                    made = Promise.resolve().then(function() {
+                        var node = ctx.createScriptProcessor(4096, micSrc.channelCount, 1);
+                        node.onaudioprocess = function(ev) {
+                            var chs = [];
+                            for (var c = 0; c < ev.inputBuffer.numberOfChannels; c++) chs.push(ev.inputBuffer.getChannelData(c).slice());
+                            push(chs);
+                        };
+                        return node;
+                    });
+                }
+                return made.then(function(node) {
+                    // a node only runs when it leads to the speakers: through a muted gain
+                    var mute = ctx.createGain();
+                    mute.gain.value = 0;
+                    micSrc.connect(node);
+                    node.connect(mute);
+                    mute.connect(ctx.destination);
+                    pcm = { node: node, mute: mute, got: got, fmt: fmt };
+                });
+            }
+            function finishPcm(p) {
+                var got = p.got;
+                return new Promise(function(resolve) {
+                    if (!p.node.port) { resolve(); return; }
+                    got.done = resolve;
+                    p.node.port.postMessage('flush');
+                    setTimeout(resolve, 600);
+                }).then(function() {
+                    try { micSrc.disconnect(p.node); } catch (err) {}
+                    p.node.disconnect();
+                    p.mute.disconnect();
+                    var nch = got.nch || 1, channels = [], off = 0;
+                    for (var c = 0; c < nch; c++) channels.push(new Int16Array(got.frames));
+                    got.parts.forEach(function(part) {
+                        for (var c = 0; c < nch; c++) channels[c].set(part[c], off);
+                        off += part[0].length;
+                    });
+                    got.parts = [];
+                    if (!got.frames) throw new Error('no audio was captured');
+                    return { channels: channels, rate: got.rate };
+                });
+            }
+
+            var starting = false;
             startBtn.addEventListener('click', function(e) {
                 e.stopPropagation();
+                if (starting || formatIdx < 0) return;
+                if (ctx && ctx.state === 'suspended') ctx.resume();
+                var fmt = VOICE_FORMATS[formatIdx], mime = formatMimes[formatIdx];
                 chunks = [];
-                var mime = pickRecorderMime();
-                try {
-                    recorder = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream);
-                } catch (err) {
+                starting = true;
+                new Promise(function(resolve) {
+                    if (fmt.pcm) { resolve(startPcm(fmt)); return; }
+                    var rec = new MediaRecorder(stream, { mimeType: mime, audioBitsPerSecond: fmt.bits });
+                    rec.ondataavailable = function(ev) { if (ev.data && ev.data.size > 0) chunks.push(ev.data); };
+                    rec.onstop = function() {
+                        if (timerInterval) clearInterval(timerInterval);
+                        stopLevels();
+                        var type = rec.mimeType || mime;
+                        showReviewState(new Blob(chunks, { type: type }), type, fmt);
+                    };
+                    rec.start();
+                    recorder = rec;
+                    resolve();
+                }).then(function() {
+                    starting = false;
+                    if (closed) return;
+                    startedAt = Date.now();
+                    levels.fill(0.08);
+                    drawBars('rec', 0);
+                    timerInterval = setInterval(function() {
+                        timerEl.textContent = fmtTimer((Date.now() - startedAt) / 1000);
+                    }, 250);
+                    // live waveform: the newest peak enters on the right every 50 ms
+                    if (analyser) {
+                        levelTimer = setInterval(function() {
+                            analyser.getFloatTimeDomainData(sampleBuf);
+                            var peak = 0;
+                            for (var i = 0; i < sampleBuf.length; i++) { var v = Math.abs(sampleBuf[i]); if (v > peak) peak = v; }
+                            levels.shift();
+                            levels.push(barHeight(peak));
+                            drawBars('rec', 0);
+                        }, 50);
+                    }
+                    if (fmt.pcm) autoStop = setTimeout(stopRecording, VOICE_MAX_PCM_SECONDS * 1000);
+                    showRecordingState();
+                }).catch(function(err) {
+                    starting = false;
                     showError('Could not start recording: ' + err.message);
-                    return;
-                }
-                recorder.ondataavailable = function(ev) { if (ev.data && ev.data.size > 0) chunks.push(ev.data); };
-                recorder.onstop = function() {
-                    if (timerInterval) clearInterval(timerInterval);
-                    stopLevels();
-                    var blob = new Blob(chunks, { type: recorder.mimeType || mime || 'audio/webm' });
-                    showReviewState(blob, recorder.mimeType || mime);
-                };
-                recorder.start();
-                startedAt = Date.now();
-                levels.fill(0.08);
-                drawBars('rec', 0);
-                timerInterval = setInterval(function() {
-                    timerEl.textContent = fmtTimer((Date.now() - startedAt) / 1000);
-                }, 250);
-                // live waveform: the newest peak enters on the right every 50 ms
-                if (analyser) {
-                    levelTimer = setInterval(function() {
-                        analyser.getFloatTimeDomainData(sampleBuf);
-                        var peak = 0;
-                        for (var i = 0; i < sampleBuf.length; i++) { var v = Math.abs(sampleBuf[i]); if (v > peak) peak = v; }
-                        levels.shift();
-                        levels.push(barHeight(peak));
-                        drawBars('rec', 0);
-                    }, 50);
-                }
-                showRecordingState();
+                });
             });
 
+            function stopRecording() {
+                if (autoStop) { clearTimeout(autoStop); autoStop = null; }
+                if (pcm) {
+                    var p = pcm;
+                    pcm = null;
+                    if (timerInterval) clearInterval(timerInterval);
+                    stopLevels();
+                    setRows([], []);
+                    setStatus('Encoding FLAC…');
+                    finishPcm(p).then(function(raw) {
+                        return encodeFlac(raw.channels, raw.rate, function(f) {
+                            if (closed) return false;
+                            setStatus('Encoding FLAC… ' + Math.round(f * 100) + ' %');
+                        });
+                    }).then(function(blob) {
+                        if (blob) showReviewState(blob, 'audio/flac', p.fmt);
+                    }).catch(function(err) {
+                        if (closed) return;
+                        showStartState();
+                        setStatus('Encoding failed: ' + err.message, { error: true });
+                    });
+                } else if (recorder && recorder.state !== 'inactive') recorder.stop();
+            }
             stopBtn.addEventListener('click', function(e) {
                 e.stopPropagation();
-                if (recorder && recorder.state !== 'inactive') recorder.stop();
+                stopRecording();
             });
 
             setRows([], []);
             drawBars('idle', 0);
-            navigator.mediaDevices.getUserMedia({ audio: true }).then(function(s) {
-                stream = s;
-                try {
-                    ctx = new (window.AudioContext || window.webkitAudioContext)();
-                    analyser = ctx.createAnalyser();
-                    analyser.fftSize = 2048;
-                    sampleBuf = new Float32Array(analyser.fftSize);
-                    ctx.createMediaStreamSource(s).connect(analyser);
-                } catch (err) { analyser = null; }
-                showStartState();
-            }).catch(function(err) {
-                setStatus('Microphone access denied or unavailable.', { error: true });
-                showError('Could not access microphone: ' + err.message);
+            // the raw microphone like the app by default; the "noise & echo filter" box turns the browser's processing back on
+            var cleanup = localStorage.getItem('tvfs_voice_cleanup') === '1';
+            function openMic() {
                 setRows([], []);
-            });
+                formatEl.innerHTML = '';
+                setStatus('Requesting microphone…');
+                micSrc = null;
+                analyser = null;
+                pcmModule = null;
+                navigator.mediaDevices.getUserMedia({
+                    audio: { echoCancellation: cleanup, noiseSuppression: cleanup, autoGainControl: cleanup }
+                }).then(function(s) {
+                    stream = s;
+                    if (closed) { stopTracks(); return; }
+                    try {
+                        var AC = window.AudioContext || window.webkitAudioContext;
+                        var rate = s.getAudioTracks()[0].getSettings().sampleRate;
+                        try { ctx = rate ? new AC({ sampleRate: rate }) : new AC(); } catch (err) { ctx = new AC(); }
+                        analyser = ctx.createAnalyser();
+                        analyser.fftSize = 2048;
+                        sampleBuf = new Float32Array(analyser.fftSize);
+                        micSrc = ctx.createMediaStreamSource(s);
+                        micSrc.connect(analyser);
+                    } catch (err) { analyser = null; micSrc = null; }
+                    if (!micSrc) {
+                        formatMimes = formatMimes.map(function(m, i) { return VOICE_FORMATS[i].pcm ? '' : m; });
+                        fixFormatIdx();
+                    }
+                    if (formatIdx < 0) {
+                        setStatus('This browser cannot record audio.', { error: true });
+                        setRows([], []);
+                        return;
+                    }
+                    showStartState();
+                }).catch(function(err) {
+                    setStatus('Microphone access denied or unavailable.', { error: true });
+                    showError('Could not access microphone: ' + err.message);
+                    setRows([], []);
+                });
+            }
+            openMic();
         }
 
         document.addEventListener('paste', function(e) {

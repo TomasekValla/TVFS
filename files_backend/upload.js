@@ -354,7 +354,8 @@ const assemblyInProgress = new Set();
 const browserFriendlyTypes = {
     image: ['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/svg+xml', 'image/bmp'],
     video: ['video/mp4', 'video/webm', 'video/ogg', 'video/quicktime'],
-    audio: ['audio/mpeg', 'audio/mp3', 'audio/wav', 'audio/ogg', 'audio/webm', 'audio/aac', 'audio/flac']
+    audio: ['audio/mpeg', 'audio/mp3', 'audio/wav', 'audio/x-wav', 'audio/wave', 'audio/ogg', 'audio/opus', 'audio/webm',
+        'audio/aac', 'audio/mp4', 'audio/x-m4a', 'audio/m4a', 'audio/flac', 'audio/x-flac']
 };
 
 function isBrowserFriendly(mimetype, category) {

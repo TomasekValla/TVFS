@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>naTiVeFS — the native TVFS app</title>
+<meta name="description" content="Native desktop client for TVFS: upload, share and open files with real players. No Electron, no webview.">
+<link rel="icon" href="/icon-192.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Syne:wght@700;800&family=Space+Grotesk:wght@500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #03070a;
+  --glass: rgba(28, 32, 42, 0.42);
+  --border: rgba(255, 255, 255, 0.14);
+  --text: #fff;
+  --dim: #9aa6bd;
+  --violet: #b083ff;
+  --mint: #2fffc4;
+  --brand: linear-gradient(135deg, #00e6bd 0%, #8455ff 100%);
+  --ease: cubic-bezier(.2, .7, .3, 1);
+}
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.6 Inter, -apple-system, 'Segoe UI', sans-serif; overflow-x: hidden; }
+.orbs { position: fixed; inset: 0; z-index: -1; overflow: hidden; }
+.orbs i { position: absolute; border-radius: 50%; filter: blur(90px); opacity: .5; animation: drift 34s ease-in-out infinite alternate; }
+.orbs i:nth-child(1) { width: 56vw; height: 56vw; left: -14vw; top: -18vw; background: #5a2fd0; }
+.orbs i:nth-child(2) { width: 44vw; height: 44vw; right: -12vw; top: 24vh; background: #00a98c; animation-delay: -12s; }
+.orbs i:nth-child(3) { width: 38vw; height: 38vw; left: 26vw; bottom: -18vw; background: #2b5fd6; animation-delay: -22s; }
+@keyframes drift { to { transform: translate(6vw, 5vh) scale(1.12); } }
+@media (prefers-reduced-motion: reduce) { .orbs i { animation: none; } html { scroll-behavior: auto; } }
+.wrap { width: min(1080px, 100%); margin: 0 auto; padding: 0 20px; }
+nav { display: flex; align-items: center; justify-content: space-between; padding: 22px 0; }
+nav .logo { font: 800 1.2rem Syne, sans-serif; color: inherit; text-decoration: none; }
+nav .links { display: flex; gap: 22px; }
+nav .links a { color: var(--dim); text-decoration: none; font-size: .9rem; transition: color .15s; }
+nav .links a:hover { color: var(--mint); }
+.hero { text-align: center; padding: 70px 0 56px; }
+.eyebrow { font: 600 .74rem 'Space Grotesk', sans-serif; letter-spacing: .16em; color: var(--mint); text-transform: uppercase; }
+h1 { font: 800 clamp(2.6rem, 8vw, 5rem)/1.04 Syne, sans-serif; margin: 14px 0 18px; letter-spacing: -.02em; }
+h1 span { background: var(--brand); -webkit-background-clip: text; background-clip: text; color: transparent; }
+.lead { color: var(--dim); font-size: clamp(1rem, 2.4vw, 1.2rem); max-width: 620px; margin: 0 auto 30px; }
+.btn { display: inline-flex; align-items: center; gap: 8px; padding: 14px 26px; border-radius: 16px; border: 0; background: var(--brand); color: #fff; font: 700 1rem 'Space Grotesk', sans-serif; text-decoration: none; cursor: pointer; transition: transform .15s var(--ease), box-shadow .15s; box-shadow: 0 14px 40px -12px #8455ff99; }
+.btn:hover { transform: translateY(-2px); }
+.btn.ghost { background: var(--glass); border: 1px solid var(--border); box-shadow: none; }
+.actions { display: flex; flex-wrap: wrap; gap: 12px; justify-content: center; }
+.note { color: var(--dim); font-size: .82rem; margin-top: 14px; }
+section { padding: 46px 0; }
+h2 { font: 700 clamp(1.6rem, 4vw, 2.2rem)/1.2 'Space Grotesk', sans-serif; margin: 0 0 8px; }
+.sub { color: var(--dim); margin: 0 0 26px; max-width: 640px; }
+.card { background: var(--glass); backdrop-filter: blur(20px) saturate(150%); -webkit-backdrop-filter: blur(20px) saturate(150%); border: 1px solid var(--border); border-radius: 20px; padding: 24px; }
+.tabs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 16px; }
+.tabs button { padding: 8px 16px; border-radius: 12px; border: 1px solid var(--border); background: transparent; color: var(--dim); font: 600 .9rem 'Space Grotesk', sans-serif; cursor: pointer; transition: all .15s; }
+.tabs button[aria-selected="true"] { background: var(--brand); color: #fff; border-color: transparent; }
+.cmd { display: flex; align-items: center; gap: 10px; background: #0007; border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px; }
+.cmd code { flex: 1; min-width: 0; overflow-x: auto; white-space: nowrap; font: .84rem 'JetBrains Mono', monospace; color: var(--mint); scrollbar-width: thin; }
+.cmd button { flex: none; padding: 6px 12px; border-radius: 9px; border: 1px solid var(--border); background: transparent; color: var(--text); font: 600 .78rem Inter, sans-serif; cursor: pointer; }
+.cmd button:hover { border-color: var(--mint); }
+.panel[hidden] { display: none; }
+.panel p { color: var(--dim); font-size: .9rem; margin: 12px 0 0; }
+.panel a, .card a { color: var(--mint); }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 290px), 1fr)); gap: 14px; }
+.feature h3 { font: 700 1.05rem 'Space Grotesk', sans-serif; margin: 0 0 6px; }
+.feature p { color: var(--dim); font-size: .92rem; margin: 0; }
+.shots { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr)); gap: 14px; }
+.shots figure { margin: 0; }
+.shots figure:first-child { grid-column: 1 / -1; }
+.shots img { width: 100%; display: block; border-radius: 14px; border: 1px solid var(--border); }
+.shots figcaption { color: var(--dim); font-size: .85rem; margin-top: 8px; }
+.tablewrap { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-size: .9rem; }
+th, td { padding: 10px 12px; text-align: right; border-bottom: 1px solid #ffffff1a; white-space: nowrap; }
+th:first-child, td:first-child { text-align: left; }
+th { color: var(--dim); font: 600 .76rem 'Space Grotesk', sans-serif; text-transform: uppercase; letter-spacing: .06em; }
+td.best { color: var(--mint); font-weight: 600; }
+.method { color: var(--dim); font-size: .84rem; margin-top: 14px; }
+footer { color: var(--dim); font-size: .85rem; padding: 34px 0 44px; display: flex; flex-wrap: wrap; gap: 14px; align-items: center; justify-content: center; }
+footer a.made { color: var(--text); text-decoration: none; }
+@media (max-width: 560px) { nav { gap: 14px; } nav .links { gap: 12px; } nav .links a { font-size: .82rem; } .hero { padding-top: 40px; } }
+</style>
+<style>
+  .vibe-badge {
+    display: inline-flex;
+    height: 20px;
+    overflow: hidden;
+    border-radius: 4px;
+    font: 11px/20px Verdana, Geneva, "DejaVu Sans", sans-serif;
+    color: #fff;
+    text-decoration: none;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, .05);
+    transition: transform .15s;
+  }
+  .vibe-badge:hover { transform: scale(1.05); }
+  .vibe-badge span { padding: 0 7px; text-shadow: 0 1px 0 rgba(1, 1, 1, .3); }
+  .vibe-badge .vibe-left { background: #555; }
+  .vibe-badge .vibe-right { display: flex; align-items: center; gap: 4px; background: #D97757; }
+</style>
+</head>
+<body>
+<div class="orbs" aria-hidden="true"><i></i><i></i><i></i></div>
+<div class="wrap">
+  <nav>
+    <a class="logo" href="/">TVFS</a>
+    <div class="links"><a href="#install">Install</a><a href="#features">Features</a><a href="#numbers">Numbers</a><a href="https://github.com/TomasekValla/naTiVeFS">GitHub</a></div>
+  </nav>
+
+  <header class="hero">
+    <div class="eyebrow">The native TVFS app</div>
+    <h1>Your files, <span>without the browser.</span></h1>
+    <p class="lead">Upload, share and open everything on TVFS with real players, in one small app. No Electron, no webview: built in Rust, silent in the tray when you don't need it.</p>
+    <div class="actions">
+      <a class="btn" href="#install" id="hero-install">Install naTiVeFS</a>
+      <a class="btn ghost" href="https://github.com/TomasekValla/naTiVeFS/releases">All downloads</a>
+    </div>
+    <p class="note">Free and open source, GPL-3.0. Windows, Linux and macOS.</p>
+  </header>
+
+  <section id="install">
+    <h2>One command and you're in</h2>
+    <p class="sub">Paste it into a terminal. It finds the right package for your system and installs the newest signed release.</p>
+    <div class="card">
+      <div class="tabs" role="tablist">
+        <button role="tab" data-os="windows" aria-selected="true">Windows</button>
+        <button role="tab" data-os="linux" aria-selected="false">Linux</button>
+        <button role="tab" data-os="macos" aria-selected="false">macOS</button>
+        <button role="tab" data-os="tuned" aria-selected="false">Build for your PC</button>
+      </div>
+      <div class="panel" data-os="windows">
+        <div class="cmd"><code>irm https://raw.githubusercontent.com/TomasekValla/naTiVeFS/main/install/windows.ps1 | iex</code><button type="button">Copy</button></div>
+        <p>In PowerShell, no administrator rights. Prefer a normal installer? Get <a href="https://github.com/TomasekValla/naTiVeFS/releases/latest/download/naTiVeFS-windows-x64-setup.exe">naTiVeFS-windows-x64-setup.exe</a>. SmartScreen may warn once, because the app has no paid certificate: More info, then Run anyway.</p>
+      </div>
+      <div class="panel" data-os="linux" hidden>
+        <div class="cmd"><code>curl -fsSL https://raw.githubusercontent.com/TomasekValla/naTiVeFS/main/install/linux.sh | sh</code><button type="button">Copy</button></div>
+        <p>Arch and CachyOS, Debian, Ubuntu and Mint, Fedora and RHEL, openSUSE. Anywhere else it installs into <code>~/.local/bin</code>. AppImage is on the <a href="https://github.com/TomasekValla/naTiVeFS/releases">releases page</a>.</p>
+      </div>
+      <div class="panel" data-os="macos" hidden>
+        <div class="cmd"><code>curl -fsSL https://raw.githubusercontent.com/TomasekValla/naTiVeFS/main/install/macos.sh | sh</code><button type="button">Copy</button></div>
+        <p>Apple Silicon, best effort: built but not yet tried on a real Mac. Audio opens in the browser for now.</p>
+      </div>
+      <div class="panel" data-os="tuned" hidden>
+        <div class="cmd"><code>curl -fsSL https://raw.githubusercontent.com/TomasekValla/naTiVeFS/main/install/build-for-this-pc.sh | sh</code><button type="button">Copy</button></div>
+        <div class="cmd" style="margin-top:8px"><code>irm https://raw.githubusercontent.com/TomasekValla/naTiVeFS/main/install/build-for-this-pc.ps1 | iex</code><button type="button">Copy</button></div>
+        <p>Linux first, Windows second. Builds for your exact processor, cleans up and leaves only the app. You need <a href="https://rustup.rs">Rust</a>, it takes a while and it doesn't update itself, so for most people the normal install is the better choice. <a href="https://github.com/TomasekValla/naTiVeFS/blob/main/INSTALLATION.md">Full guide</a>.</p>
+      </div>
+    </div>
+  </section>
+
+  <section id="features">
+    <h2>Everything TVFS, on your desktop</h2>
+    <p class="sub">The same uploads and the same look as the web, plus what only a real app can do.</p>
+    <div class="grid">
+      <div class="card feature"><h3>Audio, bit-perfect if you want</h3><p>The full TVFS rack and EQ, or every effect off and the file's exact samples straight to your DAC.</p></div>
+      <div class="card feature"><h3>A real video player</h3><p>libmpv with hardware decoding, VLC-style keys, subtitles, audio tracks and speed from 0.1× to 8×.</p></div>
+      <div class="card feature"><h3>Uploads that keep going</h3><p>Parallel chunks, resume after a dropped connection, and Upload to TVFS right in your file manager.</p></div>
+      <div class="card feature"><h3>Readers and viewers</h3><p>Markdown and text in 20 fonts with Find, images with animations, each in its own window.</p></div>
+      <div class="card feature"><h3>Your local files too</h3><p>Open anything from your disk in the same tools. Nothing is uploaded.</p></div>
+      <div class="card feature"><h3>TVFS links open here</h3><p>An optional link router sends TVFS links to the app and every other link to your own browser.</p></div>
+      <div class="card feature"><h3>Camera and voice notes</h3><p>Record straight into the upload queue, voice notes in Opus, AAC or FLAC.</p></div>
+      <div class="card feature"><h3>Quiet in the tray</h3><p>Player controls and quick actions in the tray, and nothing redrawn while nothing changes.</p></div>
+      <div class="card feature"><h3>Updates you can trust</h3><p>Signed, downloaded in the background, and never a forced restart.</p></div>
+    </div>
+  </section>
+
+  <section id="look">
+    <h2>See it</h2>
+    <p class="sub">Real screenshots of the app.</p>
+    <div class="shots">
+      <figure><img src="nativefs-shots/audio.png" alt="The audio player with its effect rack" loading="lazy"><figcaption>Audio player with the full effect rack</figcaption></figure>
+      <figure><img src="nativefs-shots/reader.png" alt="The Markdown reader" loading="lazy"><figcaption>Markdown reader</figcaption></figure>
+      <figure><img src="nativefs-shots/main.png" alt="The main window" loading="lazy"><figcaption>The TVFS you know, as an app</figcaption></figure>
+    </div>
+  </section>
+
+  <section id="numbers">
+    <h2>What it costs your computer</h2>
+    <p class="sub">The same window size, the same file, measured over the whole process tree. Lower is better.</p>
+    <div class="card" style="margin-bottom:14px">
+      <h3 style="font:700 1.05rem 'Space Grotesk',sans-serif;margin:0 0 12px">Powerful 8-core gaming desktop, Windows</h3>
+      <div class="tablewrap"><table>
+        <tr><th>Measured</th><th>naTiVeFS</th><th>Chrome</th><th>Zen</th></tr>
+        <tr><td>TVFS main page: CPU, % of one core</td><td class=best>7.2 %</td><td>19.0 %</td><td>149.8 %</td></tr><tr><td>TVFS main page: memory</td><td class=best>281 MB</td><td>406 MB</td><td>1263 MB</td></tr><tr><td>TVFS main page: GPU</td><td class=best>1.3 %</td><td>2.4 %</td><td>16.0 %</td></tr><tr><td>1080p60 video: CPU, % of one core</td><td>9.3 %</td><td class=best>8.9 %</td><td>116.1 %</td></tr><tr><td>1080p60 video: memory</td><td class=best>491 MB</td><td>677 MB</td><td>1005 MB</td></tr><tr><td>1080p60 video: GPU</td><td>11.0 %</td><td class=best>9.6 %</td><td>11.0 %</td></tr><tr><td>4K image: CPU, % of one core</td><td class=best>0.0 %</td><td>0.3 %</td><td>1.7 %</td></tr><tr><td>4K image: memory</td><td>371 MB</td><td class=best>298 MB</td><td>750 MB</td></tr><tr><td>4K image: GPU</td><td class=best>0.0 %</td><td class=best>0.0 %</td><td class=best>0.0 %</td></tr>
+      </table></div>
+    </div>
+    <div class="card" style="margin-bottom:14px">
+      <h3 style="font:700 1.05rem 'Space Grotesk',sans-serif;margin:0 0 12px">Power-saving 4-core laptop, Linux</h3>
+      <div class="tablewrap"><table>
+        <tr><th>Measured</th><th>naTiVeFS</th><th>Chrome</th><th>Zen</th></tr>
+        <tr><td>TVFS main page: CPU, % of one core</td><td class=best>10.8 %</td><td>27.4 %</td><td>78.7 %</td></tr><tr><td>TVFS main page: memory</td><td class=best>118 MB</td><td>581 MB</td><td>663 MB</td></tr><tr><td>TVFS main page: GPU</td><td class=best>5.2 %</td><td>14.8 %</td><td>16.9 %</td></tr><tr><td>1080p60 video: CPU, % of one core</td><td class=best>11.0 %</td><td>12.0 %</td><td>28.8 %</td></tr><tr><td>1080p60 video: memory</td><td class=best>310 MB</td><td>536 MB</td><td>664 MB</td></tr><tr><td>1080p60 video: GPU</td><td>23.0 %</td><td class=best>14.4 %</td><td>19.7 %</td></tr><tr><td>4K image: CPU, % of one core</td><td class=best>0.0 %</td><td>0.8 %</td><td>15.6 %</td></tr><tr><td>4K image: memory</td><td class=best>153 MB</td><td>528 MB</td><td>592 MB</td></tr><tr><td>4K image: GPU</td><td class=best>0.0 %</td><td>0.1 %</td><td class=best>0.0 %</td></tr>
+      </table></div>
+    </div>
+    <p class="method">Not everything goes our way: the browsers use a little less GPU for video on Linux, and Chrome less CPU for video and less memory for an image on Windows. naTiVeFS is still young, and more optimisation is coming. Each number is the median of three 30-second runs after a 15-second settle, in a clean browser profile with one tab and no extensions, counting every process of the app or browser. GPU adds up all engines, without the desktop compositor. Memory is private memory on Windows and PSS on Linux, so compare within one table, not between them. The tuned build for your PC measured about the same as the normal one, so we don't promise it is faster.</p>
+  </section>
+
+  <footer>
+    <span>Made by <a class="made" href="https://tomasekvalla.cz">TomasekValla</a></span>
+<a class="vibe-badge" href="https://claude.ai" target="_blank" rel="noopener noreferrer" aria-label="Vibecoded with Claude">
+  <span class="vibe-left">Vibecoded with</span>
+  <span class="vibe-right">
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="#fff" aria-hidden="true"><path d="M4.7 15.96 9.4 13.3l.08-.23-.08-.13h-.23l-.79-.05-2.69-.07-2.33-.1-2.26-.12-.57-.12L0 11.77l.05-.35.48-.32.69.06 1.51.1 2.27.16 1.64.1 2.44.25h.39l.05-.16-.13-.1-.1-.1-2.35-1.59-2.54-1.68-1.33-.97-.72-.49-.36-.46-.16-1 .65-.72.88.06.22.06.89.69 1.9 1.47 2.49 1.83.36.3.15-.1.02-.07-.17-.27-1.35-2.44-1.44-2.49-.64-1.03-.17-.62a3 3 0 0 1-.1-.73L6.5.13 6.9 0l1 .13.42.36.62 1.42 1 2.23 1.56 3.04.46.9.24.83.09.25h.16v-.14l.13-1.72.24-2.1.23-2.72.08-.76.38-.92.75-.5.59.28.48.69-.07.44-.29 1.86-.56 2.9-.36 1.95h.21l.24-.24.98-1.3 1.65-2.07.73-.82.85-.9.55-.44h1.03l.76 1.13-.34 1.17-1.06 1.35-.88 1.14-1.26 1.7-.79 1.36.07.11.19-.02 2.85-.6 1.54-.28 1.84-.32.83.39.09.39-.33.81-1.97.49-2.3.46-3.44.81-.04.03.05.06 1.55.15.66.03h1.62l3.02.23.79.52.47.64-.08.49-1.21.62-1.64-.39-3.82-.91-1.31-.33h-.18v.11l1.09 1.07 2 1.81 2.51 2.33.13.58-.32.45-.34-.05-2.2-1.66-.85-.74-1.92-1.62h-.13v.17l.44.65 2.34 3.51.12 1.08-.17.35-.61.21-.66-.12-1.37-1.92-1.41-2.16-1.14-1.94-.14.08-.67 7.24-.31.37-.73.28-.61-.46-.32-.75.32-1.47.39-1.92.31-1.53.29-1.9.17-.63-.01-.04-.14.02-1.44 1.97-2.18 2.95-1.73 1.85-.41.16-.72-.37.07-.66.4-.59 2.4-3.05 1.44-1.89.93-1.09-.01-.16h-.06l-6.36 4.13-1.13.15-.49-.46.06-.75.23-.24 1.92-1.32z"/></svg>
+    Claude
+  </span>
+</a>
+  </footer>
+</div>
+<script>
+(function () {
+  var tabs = document.querySelectorAll('.tabs button');
+  var panels = document.querySelectorAll('.panel');
+  function show(os) {
+    tabs.forEach(function (t) { t.setAttribute('aria-selected', t.dataset.os === os); });
+    panels.forEach(function (p) { p.hidden = p.dataset.os !== os; });
+  }
+  tabs.forEach(function (t) { t.addEventListener('click', function () { show(t.dataset.os); }); });
+  var ua = navigator.userAgent;
+  show(/Mac/.test(ua) ? 'macos' : /Linux|X11/.test(ua) ? 'linux' : 'windows');
+  document.querySelectorAll('.cmd button').forEach(function (b) {
+    b.addEventListener('click', function () {
+      navigator.clipboard.writeText(b.previousElementSibling.textContent).then(function () {
+        b.textContent = 'Copied';
+        setTimeout(function () { b.textContent = 'Copy'; }, 1500);
+      });
+    });
+  });
+})();
+</script>
+</body>
+</html>

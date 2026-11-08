@@ -29,6 +29,13 @@ const probeRoutes = require('./probe');
 const speedtestRoutes = require('./speedtest');
 const { router: protectedShareRoutes } = require('./protectedShare');
 const { router: batteryRoutes } = require('./battery');
+// Optional private module (not in this repo); the backend runs fine without it.
+let simrailRoutes = null;
+try { ({ router: simrailRoutes } = require('./simrail')); }
+catch (err) {
+    const missing = err.code === 'MODULE_NOT_FOUND' && String(err.message).includes("'./simrail'");
+    if (!missing) console.error('[SimRail] module failed to load:', err);
+}
 const http = require('http');
 const { router: moneyGameRoutes, attachSocket } = require('./moneygame/moneyGame');
 
@@ -61,6 +68,7 @@ app.use('/api', speedtestRoutes);
 app.use('/api/protected', protectedShareRoutes);
 app.use('/api/battery', batteryRoutes);
 app.use('/api/moneygame', moneyGameRoutes);
+if (simrailRoutes) app.use('/api/simrail', simrailRoutes);
 
 // alongside the other app.use('/api/...', ...) lines
 app.use('/api/twc', twcIdentityRoutes);

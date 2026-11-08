@@ -69,3 +69,10 @@ files_web/get.html
 files_web/get/
 files_web/install-linux.sh
 files_web/install-windows.ps1
+
+# Classradar - separate project, never part of the TVFS repo
+/classradar/
+
+# SimRail stats - personal tool, not part of TVFS (code + recorded player-count history)
+files_backend/simrail.js
+files_backend/simrail/

@@ -27,7 +27,7 @@ const uploadRoutes = require('./upload');
 const spotifyRoutes = require('./spotify');
 const probeRoutes = require('./probe');
 const speedtestRoutes = require('./speedtest');
-const { router: protectedShareRoutes } = require('./protectedShare');
+const { router: protectedShareRoutes, INIT_BODY_PATH } = require('./protectedShare');
 const { router: batteryRoutes } = require('./battery');
 // Optional private module (not in this repo); the backend runs fine without it.
 let simrailRoutes = null;
@@ -53,8 +53,10 @@ app.use(cors({
     credentials: true
 }));
 app.use(cookieParser());
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+// The Users Only upload init has its own, larger body parsers (see protectedShare.js); all other routes keep the defaults
+const skipFor = (path, mw) => (req, res, next) => (req.path === path ? next() : mw(req, res, next));
+app.use(skipFor(INIT_BODY_PATH, express.json()));
+app.use(skipFor(INIT_BODY_PATH, express.urlencoded({ extended: true })));
 
 app.post('/share-target', (req, res) => res.redirect(303, '/upload.html?share=1'));
 app.get('/share-target', (req, res) => res.redirect(302, '/upload.html'));

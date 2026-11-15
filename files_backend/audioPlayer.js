@@ -2,9 +2,10 @@
 
 const fs = require('fs');
 const path = require('path');
-const { spawnSync } = require('child_process');
+const { spawn } = require('child_process');
 const { analyzeAudio } = require('./bpmAnalyzer');
 const safeFs = require('./safeFs');
+const appOffer = require('./appOffer');
 
 const FONTS_CSS_URL = 'https://files.tomasekvalla.cz/fonts/fonts.css';
 
@@ -99,17 +100,99 @@ function client() {
     return clientCache;
 }
 
-// Integrated loudness of the whole track (EBU R128, LUFS), or null if ffmpeg is
-// missing or fails. The player turns tracks louder than the target down to it.
-function measureLoudness(filePath) {
-    try {
-        const r = spawnSync('ffmpeg', ['-hide_banner', '-nostats', '-i', filePath, '-vn', '-af', 'ebur128=framelog=verbose', '-f', 'null', '-'],
-            { encoding: 'utf8', timeout: 120000, maxBuffer: 16 * 1024 * 1024 });
-        const m = /Integrated loudness:\s*I:\s*(-?\d+(?:\.\d+)?) LUFS/.exec(r.stderr || '');
-        return m ? parseFloat(m[1]) : null;
-    } catch (e) {
-        return null;
+let voiceClientCache = null;
+function voiceClient() {
+    if (!voiceClientCache) {
+        voiceClientCache = {
+            css: inlineSafe(readClient('voice.css')),
+            js: inlineSafe(readClient('voice.js')),
+        };
     }
+    return voiceClientCache;
+}
+
+// Runs a tool without blocking the event loop. Resolves { code, stdout, stderr } (stdout/stderr as Buffers,
+// each capped at maxBytes; the process is killed when it runs past timeoutMs or the cap).
+function runTool(cmd, args, { timeoutMs = 60000, maxBytes = 16 * 1024 * 1024 } = {}) {
+    return new Promise(resolve => {
+        let proc;
+        try { proc = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true }); }
+        catch (e) { return resolve({ code: -1, stdout: Buffer.alloc(0), stderr: Buffer.alloc(0) }); }
+        const out = [], err = [];
+        let outLen = 0, errLen = 0, done = false;
+        const finish = code => {
+            if (done) return;
+            done = true;
+            clearTimeout(timer);
+            resolve({ code, stdout: Buffer.concat(out), stderr: Buffer.concat(err) });
+        };
+        const kill = () => { try { proc.kill('SIGKILL'); } catch (e) {} };
+        const timer = setTimeout(() => { kill(); finish(-1); }, timeoutMs);
+        proc.stdout.on('data', d => { outLen += d.length; if (outLen > maxBytes) { kill(); finish(-1); } else out.push(d); });
+        proc.stderr.on('data', d => { errLen += d.length; if (errLen <= maxBytes) err.push(d); });
+        proc.on('error', () => finish(-1));
+        proc.on('close', code => finish(code));
+    });
+}
+
+// Below this the recording is practically silence: boosting it would only raise the noise floor
+const SILENCE_LUFS = -58;
+
+// Integrated loudness of the whole track (EBU R128, LUFS), or null if ffmpeg is missing, fails, times out
+// or the track is near-silent. The player turns tracks louder than the target down to it.
+async function measureLoudness(filePath) {
+    const r = await runTool('ffmpeg', ['-hide_banner', '-nostats', '-i', filePath, '-vn', '-af', 'ebur128=framelog=verbose', '-f', 'null', '-'],
+        { timeoutMs: 120000 });
+    const m = /Integrated loudness:\s*I:\s*(-?\d+(?:\.\d+)?) LUFS/.exec(r.stderr.toString('utf8'));
+    if (!m) return null;
+    const v = parseFloat(m[1]);
+    return v > SILENCE_LUFS ? v : null;
+}
+
+// Facts about a candidate voice note from ffprobe (never from what the client claimed):
+// { hasAudio, durationSec }. Duration is null when unknown.
+async function probeAudio(filePath) {
+    const r = await runTool('ffprobe', ['-v', 'error', '-print_format', 'json', '-show_format', '-show_streams', filePath],
+        { timeoutMs: 15000, maxBytes: 8 * 1024 * 1024 });
+    if (r.code !== 0) return null;
+    try {
+        const data = JSON.parse(r.stdout.toString('utf8'));
+        const stream = (data.streams || []).find(s => s.codec_type === 'audio');
+        const d = data.format && data.format.duration ? parseFloat(data.format.duration) : null;
+        return { hasAudio: !!stream, durationSec: d > 0 ? d : null, data };
+    } catch (e) { return null; }
+}
+
+// Voice notes are short recordings: anything bigger is a normal audio upload, not worth the extra decoding
+const VOICE_MAX_SECONDS = 10 * 60;
+const VOICE_MAX_BYTES = 40 * 1024 * 1024;
+
+// Waveform of a voice note: 64 bar heights (integers 0-100) plus the exact duration, both from one
+// ffmpeg decode to 8 kHz mono (at most VOICE_MAX_SECONDS, 9.6 MB). Returns null when ffmpeg is missing or
+// fails (the page then computes the bars in the browser).
+const VOICE_BARS = 64;
+async function computeVoicePeaks(filePath) {
+    const r = await runTool('ffmpeg', ['-v', 'error', '-nostdin', '-i', filePath, '-vn', '-ac', '1', '-ar', '8000', '-t', String(VOICE_MAX_SECONDS), '-f', 's16le', '-'],
+        { timeoutMs: 60000, maxBytes: VOICE_MAX_SECONDS * 8000 * 2 + 1024 });
+    const buf = r.stdout;
+    if (r.code !== 0 || buf.length < VOICE_BARS * 2) return null;
+    const n = buf.length >> 1;
+    const level = new Array(VOICE_BARS).fill(0);
+    let max = 0;
+    for (let b = 0; b < VOICE_BARS; b++) {
+        const from = Math.floor(b * n / VOICE_BARS), to = Math.floor((b + 1) * n / VOICE_BARS);
+        let peak = 0, sum = 0;
+        for (let i = from; i < to; i++) {
+            const a = Math.abs(buf.readInt16LE(i * 2)) / 32768;
+            if (a > peak) peak = a;
+            sum += a * a;
+        }
+        const v = 0.65 * Math.sqrt(sum / Math.max(1, to - from)) + 0.35 * peak;
+        level[b] = v;
+        if (v > max) max = v;
+    }
+    const peaks = level.map(v => max > 1e-4 ? Math.round(Math.pow(v / max, 0.7) * 100) : 0);
+    return { peaks, durationSec: n / 8000 };
 }
 
 // Shared "one-line" summary of the ffprobe/BPM metadata — used both on the
@@ -287,10 +370,11 @@ function buildPlayerHtml({ audioUrl, originalName, meta, backUrl, share }) {
 <style>
 :root{ --track-font:${font.stack}; }
 ${CLIENT.css}
-${share ? GATE_CSS : ''}
+${share ? GATE_CSS : appOffer.css()}
 </style>
 </head>
 <body>
+${share ? '' : appOffer.html({ audio: true })}
 <canvas id="vis"></canvas>
 
 <header class="topbar">
@@ -373,6 +457,81 @@ ${share ? `<script>${gateJs(share.shareId)}</script>` : ''}
 </html>`;
 }
 
+// ─── Voice note page ────────────────────────────────────────────────────────
+// A voice note gets this chat-message page instead of the music player. The uploader's name is
+// never shown: the label is always "Voice note".
+
+function buildVoiceHtml({ audioUrl, meta, peaks, uploadedAt }) {
+    const V = voiceClient();
+    const cfg = {
+        voiceNote: true,
+        audioUrl,
+        lufs: Number.isFinite(meta.lufs) ? meta.lufs : null,
+        durationSec: Number.isFinite(meta.durationSec) && meta.durationSec > 0 ? meta.durationSec : null,
+        peaks: Array.isArray(peaks) ? peaks : null,
+        uploadedAt: uploadedAt || Date.now(),
+        gated: false,
+        icons: { play: ICONS.play, pause: ICONS.pause, volume: ICONS.volume, mute: ICONS.mute },
+    };
+    return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="color-scheme" content="dark light">
+<meta name="theme-color" content="#03070a" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#eef1f8" media="(prefers-color-scheme: light)">
+<title>Voice note — TVFS</title>
+<link rel="stylesheet" href="${FONTS_CSS_URL}">
+<style>
+${V.css}
+${appOffer.css()}
+</style>
+</head>
+<body>
+<div class="vn-page">
+${appOffer.html({ audio: true })}
+<main class="vn-wrap">
+  <div class="vn-brand">TVFS <span>Voice</span></div>
+  <section class="vn-chat" aria-label="Voice note">
+    <div class="vn-msg">
+      <div class="vn-col">
+        <div class="vn-who">Voice note</div>
+        <div class="vn-bubble">
+          <button type="button" class="vn-play" id="vnPlay" aria-label="Play">${ICONS.play}</button>
+          <div class="vn-mid">
+            <div class="vn-wave" id="vnWave" role="slider" tabindex="0" aria-label="Seek" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"></div>
+            <div class="vn-time" id="vnTime">0:00 / --:--</div>
+          </div>
+        </div>
+        <div class="vn-date" id="vnDate"></div>
+        <div class="vn-error" id="vnError" role="alert"></div>
+      </div>
+    </div>
+    <div class="vn-tools">
+      <button type="button" class="vn-chip" id="vnSpeed" title="Playback speed">1x</button>
+      <div class="vn-vol">
+        <button type="button" class="vn-mute" id="vnMute" aria-label="Mute">${ICONS.volume}</button>
+        <input type="range" class="vn-range" id="vnVol" min="0" max="200" step="1" value="100" aria-label="Volume">
+        <span class="vn-vol-pct" id="vnVolPct" aria-hidden="true">100 %</span>
+      </div>
+    </div>
+  </section>
+</main>
+</div>
+<audio id="audio" preload="metadata"></audio>
+<script>window.TVFS_PLAYER = ${safeScriptJson(cfg)};</script>
+<script>
+${V.js}
+</script>
+</body>
+</html>`;
+}
+
+function generateVoicePlayerHtml(audioUrl, meta, peaks, uploadedAt) {
+    return buildVoiceHtml({ audioUrl, meta: meta || {}, peaks, uploadedAt });
+}
+
 function generateAudioPlayerHtml(audioUrl, originalName, meta, backUrl) {
     return buildPlayerHtml({ audioUrl, originalName, meta, backUrl: backUrl || '/upload.html', share: null });
 }
@@ -385,25 +544,61 @@ function generateProtectedAudioPlayerHtml(audioUrl, originalName, meta, shareId,
 // storedFilename: filename as saved on disk (in files/audio/)
 // filePath: absolute path to that file (for ffprobe/aubio)
 // playersDir: absolute dir to write the generated player HTML into
-function maybeCreateAudioPlayer(storedFilename, originalName, mimeType, filePath, playersDir, publicAudioUrl, backUrl) {
+// opts.voiceNote: true asks for the voice note page. It is only honoured when ffprobe confirms an audio
+// stream and the file is short and small; otherwise the upload gets the normal player (result.voiceNote false).
+// Async: every external tool call runs without blocking the server.
+async function maybeCreateAudioPlayer(storedFilename, originalName, mimeType, filePath, playersDir, publicAudioUrl, backUrl, opts) {
     const isAudio = mimeType && mimeType.split('/')[0] === 'audio';
     if (!isAudio) return null;
+    let voiceNote = !!(opts && opts.voiceNote);
 
     if (!fs.existsSync(playersDir)) fs.mkdirSync(playersDir, { recursive: true });
 
-    const slug = originalName.replace(/\.[^.]+$/, '').replace(/[^\w\-]/g, '_').replace(/_+/g, '_').slice(0, 40) || 'track';
+    const emptyMeta = { codec: null, bitrateKbps: null, sampleRateHz: null, channels: null, durationSec: null, bpm: null };
     let meta;
-    try {
-        meta = analyzeAudio(filePath);
-    } catch (e) {
-        console.error('⚠️  [AUDIO PLAYER] Metadata/BPM analysis failed:', e.message);
-        meta = { codec: null, bitrateKbps: null, sampleRateHz: null, channels: null, durationSec: null, bpm: null };
+    if (voiceNote) {
+        let size = 0;
+        try { size = fs.statSync(filePath).size; } catch (e) {}
+        const probe = size > 0 && size <= VOICE_MAX_BYTES ? await probeAudio(filePath) : null;
+        if (!probe || !probe.hasAudio || (probe.durationSec && probe.durationSec > VOICE_MAX_SECONDS)) {
+            voiceNote = false;
+        } else {
+            const st = (probe.data.streams || []).find(x => x.codec_type === 'audio') || {};
+            const fm = probe.data.format || {};
+            meta = {
+                ...emptyMeta,
+                codec: st.codec_name ? st.codec_name.toUpperCase() : null,
+                container: fm.format_name || null,
+                bitrateKbps: fm.bit_rate ? Math.round(parseInt(fm.bit_rate, 10) / 1000) : null,
+                sampleRateHz: st.sample_rate ? parseInt(st.sample_rate, 10) : null,
+                channels: st.channels || null,
+                durationSec: probe.durationSec,
+            };
+        }
     }
-    meta.lufs = measureLoudness(filePath);
+
+    const slug = voiceNote
+        ? 'voice'
+        : originalName.replace(/\.[^.]+$/, '').replace(/[^\w\-]/g, '_').replace(/_+/g, '_').slice(0, 40) || 'track';
+    if (!meta) {
+        try {
+            meta = analyzeAudio(filePath);
+        } catch (e) {
+            console.error('⚠️  [AUDIO PLAYER] Metadata/BPM analysis failed:', e.message);
+            meta = emptyMeta;
+        }
+    }
+    meta.lufs = await measureLoudness(filePath);
 
     let html;
     try {
-        html = generateAudioPlayerHtml(publicAudioUrl, originalName, meta, backUrl);
+        if (voiceNote) {
+            const wf = await computeVoicePeaks(filePath);
+            if (wf && !(meta.durationSec > 0)) meta.durationSec = wf.durationSec;
+            html = generateVoicePlayerHtml(publicAudioUrl, meta, wf ? wf.peaks : null, Date.now());
+        } else {
+            html = generateAudioPlayerHtml(publicAudioUrl, originalName, meta, backUrl);
+        }
     } catch (e) {
         // The upload itself must still succeed, it just gets no player page.
         console.error('⚠️  [AUDIO PLAYER] Player page could not be generated:', e.message);
@@ -418,6 +613,7 @@ function maybeCreateAudioPlayer(storedFilename, originalName, mimeType, filePath
         html,
         meta,
         font: fontForBpm(meta.bpm),
+        voiceNote,
     };
 }
 
@@ -427,7 +623,7 @@ function maybeCreateAudioPlayer(storedFilename, originalName, mimeType, filePath
 // /login endpoint using the real tvfs_token session cookie).
 // contentUrl: the share's /api/protected/{shareId}/file/{index} endpoint.
 // landingUrl: the share's landing page, used for the back link.
-function maybeCreateProtectedAudioPlayer(originalName, mimeType, filePath, playersDir, contentUrl, shareId, landingUrl) {
+async function maybeCreateProtectedAudioPlayer(originalName, mimeType, filePath, playersDir, contentUrl, shareId, landingUrl) {
     const isAudio = mimeType && mimeType.split('/')[0] === 'audio';
     if (!isAudio) return null;
 
@@ -441,7 +637,7 @@ function maybeCreateProtectedAudioPlayer(originalName, mimeType, filePath, playe
         console.error('⚠️  [PROTECTED AUDIO PLAYER] Metadata/BPM analysis failed:', e.message);
         meta = { codec: null, bitrateKbps: null, sampleRateHz: null, channels: null, durationSec: null, bpm: null };
     }
-    meta.lufs = measureLoudness(filePath);
+    meta.lufs = await measureLoudness(filePath);
 
     let html;
     try {
@@ -460,6 +656,7 @@ function maybeCreateProtectedAudioPlayer(originalName, mimeType, filePath, playe
 module.exports = {
     maybeCreateAudioPlayer,
     generateAudioPlayerHtml,
+    generateVoicePlayerHtml,
     maybeCreateProtectedAudioPlayer,
     generateProtectedAudioPlayerHtml,
     fontForBpm,

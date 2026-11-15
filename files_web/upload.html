@@ -294,9 +294,10 @@
         .upload-area.mode-switching {
             animation: dropzone-in 0.28s cubic-bezier(0.22, 1, 0.36, 1) both;
         }
-        .upload-area.recorder-open { min-height: 440px; }
+        .upload-area.recorder-open { min-height: 520px; }
         .upload-area.capture-open { min-height: 300px; }
         .upload-area.recorder-review { min-height: 460px; }
+        .upload-area.recorder-review .voice-gain { display: none; }
         /* ── Voice recorder (Create mode; same layout as the naTiVeFS app) ── */
         .voice-panel {
             position: absolute; inset: 0; z-index: 20; border-radius: 22px; padding: 20px;
@@ -328,6 +329,16 @@
         .voice-btn.primary { background: #ff4d4d; border-color: #ff4d4d; color: #fff; }
         .voice-btn.primary:hover { background: #e04343; }
         .voice-btn:active { transform: scale(0.96); transition-duration: 0.07s; }
+        .voice-gain { display: flex; flex-direction: column; gap: 7px; width: min(280px, 100%); }
+        .voice-gain[hidden] { display: none; }
+        .voice-gain-row { display: flex; align-items: center; gap: 9px; color: rgba(255,255,255,0.72); font-size: 0.72rem; font-weight: 600; }
+        .voice-gain-row input[type=range] { flex: 1; min-width: 0; accent-color: var(--accent-secondary); cursor: pointer; }
+        .voice-gain-val { min-width: 3.2em; text-align: right; font-variant-numeric: tabular-nums; color: #fff; }
+        .voice-gain .tri-btn { padding: 4px 10px; font-size: 0.68rem; color: rgba(255,255,255,0.72); }
+        .voice-gain .tri-btn.active { color: #fff; }
+        .voice-meter { position: relative; height: 7px; border-radius: 4px; background: rgba(255,255,255,0.12); overflow: hidden; }
+        .voice-meter i { position: absolute; left: 0; top: 0; bottom: 0; width: 0; border-radius: 4px; background: var(--accent-secondary); transition: width 0.06s linear; }
+        .voice-meter i.hot { background: #ff4d4d; }
         .voice-format { display: flex; flex-direction: column; align-items: center; gap: 6px; max-width: 100%; }
         .voice-format:empty { display: none; }
         .voice-format .tri-switch { max-width: 100%; overflow-x: auto; }
@@ -421,7 +432,12 @@
             cursor: pointer; padding: 4px 8px; border-radius: 8px;
         }
         .file-list-clear:hover { background: rgba(255,118,117,0.1); }
-        .file-list { display: flex; flex-direction: column; gap: 4px; max-height: 180px; overflow-y: auto; overscroll-behavior: contain; }
+        .file-list { display: flex; flex-direction: column; gap: 4px; max-height: min(320px, 45vh); overflow-y: auto; overscroll-behavior: contain; }
+        /* more files below: the last visible card fades out instead of looking cut off */
+        .file-list.more-below {
+            mask-image: linear-gradient(180deg, #000 calc(100% - 36px), transparent 100%);
+            -webkit-mask-image: linear-gradient(180deg, #000 calc(100% - 36px), transparent 100%);
+        }
         .file-row {
             display: flex; align-items: center; gap: 8px; padding: 9px 12px;
             background: var(--glass-bg); backdrop-filter: blur(12px) saturate(150%); -webkit-backdrop-filter: blur(12px) saturate(150%);
@@ -514,6 +530,23 @@
             outline: none;
             box-shadow: 0 0 0 2px rgba(47,255,196,0.12);
         }
+        /* audio files get a second line in their row: upload as a normal audio track or as a voice note */
+        .file-entry.two-line {
+            background: var(--glass-bg); backdrop-filter: blur(12px) saturate(150%); -webkit-backdrop-filter: blur(12px) saturate(150%);
+            border-radius: 13px; border: 1px solid var(--glass-border);
+        }
+        .file-entry.two-line > .file-row { background: none; border: none; backdrop-filter: none; -webkit-backdrop-filter: none; padding-bottom: 5px; }
+        .file-row-sub { display: flex; align-items: center; gap: 8px; padding: 0 12px 9px 54px; min-height: 26px; }
+        .file-row-sub-label { color: var(--text-secondary); font-size: 0.68rem; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; }
+        .file-kind { display: inline-flex; border: 1px solid var(--glass-border); border-radius: 999px; overflow: hidden; }
+        .file-kind button {
+            background: transparent; border: none; cursor: pointer; padding: 3px 10px; font: inherit; font-size: 0.7rem; font-weight: 700;
+            color: var(--text-secondary); transition: background 0.15s, color 0.15s;
+        }
+        .file-kind button.active { background: var(--accent-gradient); color: #fff; }
+        .file-kind button:not(.active):hover { color: var(--text-main); }
+        .file-kind-fixed { font-size: 0.7rem; font-weight: 700; color: var(--accent-secondary); }
+        @media (max-width: 420px) { .file-row-sub { padding-left: 12px; } }
         .file-list-footer { font-size: 0.72rem; color: var(--text-secondary); text-align: center; padding-top: 4px; }
 
         .section-group { display: flex; flex-direction: column; gap: 12px; }
@@ -1344,10 +1377,99 @@
         /* ── Views: #settings and #check replace the main cards (same look as the naTiVeFS app pages) ── */
         .view { display: none; }
         body.view-settings .container > :not(#settingsView),
-        body.view-check .container > :not(#checkView) { display: none !important; }
+        body.view-check .container > :not(.side-stack),
+        body.view-check .side-stack > :not(#checkView) { display: none !important; }
+        .side-stack { display: contents; }
+        #linksCard { display: none; }
         body.view-settings #settingsView, body.view-check #checkView { display: flex; animation: fadeIn 0.3s ease; }
         /* short views stay at the top instead of being centred (no jump when results appear) */
         body.view-settings .container, body.view-check .container { margin-top: 0; }
+
+        /* -- Desktop layout: cards side by side instead of one phone-width strip --
+           Below 900 px nothing changes (phones, narrow windows). 900+: upload with the links and
+           notices in the middle, Recently uploaded and File Check (always open) on the right.
+           1200+: Settings always visible on the left (full length, scrolls with the page). */
+        @media (min-width: 900px) {
+            .container {
+                max-width: none;
+                display: grid;
+                grid-template-columns: minmax(440px, 480px) minmax(320px, 400px);
+                grid-template-areas: "main right" "info right";
+                grid-template-rows: auto 1fr;
+                /* side columns further out on wide windows: 24 px at 1200, ~60 at 1600, 128 at 2400 */
+                column-gap: clamp(24px, calc(9vw - 84px), 128px);
+                align-items: start;
+                justify-content: center;
+            }
+            #mainCard { grid-area: main; }
+            #settingsCard { grid-area: info; }
+            #settingsView { grid-area: main; grid-row: 1 / span 2; }
+            .side-stack { grid-area: right; grid-row: 1 / span 2; display: flex; flex-direction: column; gap: 18px; min-width: 0; }
+            #recentCard { margin-top: 0 !important; }
+            #recentCard, #checkView { padding: 32px 28px; }
+            #checkView { display: flex; animation: none; }
+            #checkView [data-view-back] { display: none; }
+            #checkView .chk-input-row { flex-direction: column; }
+            #linksCard { display: flex; padding: 24px 28px; }
+            #linksCard .info-cards-row { display: flex; flex-direction: column; gap: 10px; }
+            #linksCard .info-card { flex: none; }
+            #linksCard .info-card[href="#check"] { display: none; }
+            #settingsCard .info-cards-row { display: none; }
+            /* three columns of glass: a blur inside an already blurred card looks the same but costs a full extra
+               pass per element on every background frame (measured ~25 % less GPU + CPU without) */
+            .container > .glass-card *, .side-stack > .glass-card * { backdrop-filter: none; -webkit-backdrop-filter: none; }
+            .voice-panel { background: rgba(3, 7, 10, 0.95); }
+            .side-panel { padding: 32px 28px; }
+            /* Settings as a page (900-1199 px) is one centred column, like before */
+            body.view-settings .container { grid-template-columns: minmax(440px, 560px); grid-template-areas: "main" "info"; }
+            body.view-settings #settingsView { padding: 40px; }
+            #settingsView.pulse, #checkView.pulse { animation: panelPulse 0.9s ease; }
+        }
+        @media (min-width: 1200px) {
+            .container {
+                grid-template-columns: minmax(320px, 380px) minmax(440px, 480px) minmax(320px, 400px);
+                grid-template-areas: "left main right" "left info right";
+            }
+            #settingsView { grid-area: left; grid-row: 1 / span 2; display: flex; animation: none; }
+            #settingsView [data-view-back] { display: none; }
+        }
+        /* big screens: a little more room for the side columns; the middle keeps the classic 480 px */
+        @media (min-width: 1800px) {
+            .container {
+                grid-template-columns: minmax(340px, 430px) minmax(440px, 480px) minmax(340px, 450px);
+            }
+        }
+        /* -- Compact layout (Settings > Appearance > Layout): the same cards with less space around and between them -- */
+        .layout-reset {
+            align-self: flex-start; margin-top: 2px; padding: 4px 10px; border-radius: 8px; cursor: pointer;
+            background: transparent; border: 1px solid var(--glass-border); color: var(--text-secondary);
+            font: inherit; font-size: 0.74rem; font-weight: 700;
+        }
+        .layout-reset:hover { color: var(--text-main); border-color: var(--accent-primary); }
+        body.compact .glass-card { padding: 24px; gap: 14px; }
+        body.compact #recentCard, body.compact #settingsCard { margin-top: 10px !important; }
+        body.compact .brand-card { padding: 14px 18px; }
+        body.compact .welcome-card { padding: 14px 18px; }
+        body.compact .status-item { padding: 10px 12px; }
+        body.compact .upload-area { padding: 24px 16px; }
+        body.compact .mode-toggle { margin-bottom: 8px; }
+        body.compact .setting-card { padding: 11px 14px; gap: 6px; }
+        body.compact .settings-section, body.compact .section-group { gap: 8px; }
+        body.compact .recent-list { gap: 6px; }
+        body.compact .recent-item { padding: 6px 10px; }
+        body.compact .info-card { padding: 8px 12px; }
+        @media (max-width: 520px) { body.compact .glass-card { padding: 20px 14px; } }
+        @media (min-width: 900px) {
+            body.compact .side-stack { gap: 10px; }
+            body.compact .side-panel, body.compact #recentCard, body.compact #checkView { padding: 20px 20px; }
+            body.compact #linksCard { padding: 16px 20px; }
+        }
+
+        @keyframes panelPulse {
+            0% { box-shadow: var(--shadow-xl), 0 0 0 0 var(--accent-secondary); }
+            35% { box-shadow: var(--shadow-xl), 0 0 0 3px var(--accent-secondary); }
+            100% { box-shadow: var(--shadow-xl), 0 0 0 0 transparent; }
+        }
 
         .icon-btn {
             background: transparent; border: none; cursor: pointer; padding: 8px; border-radius: 50%;
@@ -1454,7 +1576,7 @@
 
     <div class="scroll-wrap">
     <div class="container">
-        <div class="glass-card">
+        <div class="glass-card" id="mainCard">
 
             <div class="welcome-card" id="welcomeCard">
                 <h2>New to TVFS?</h2>
@@ -1745,13 +1867,68 @@
 
         </div>
 
-        <div class="glass-card" style="margin-top:18px;">
+        <div class="side-stack" id="sideStack">
+        <div class="glass-card" style="margin-top:18px;" id="recentCard">
             <div class="recent-title-row">
                 <span class="recent-title">Recently uploaded</span>
             </div>
             <div class="recent-list" id="recentList"></div>
             <div class="recent-empty" id="recentEmpty" style="display:none;">Nothing uploaded in the last 14 days.</div>
             <button class="recent-show-more" id="recentShowMoreBtn" style="display:none;">Show more</button>
+        </div>
+        <div class="glass-card view" id="checkView">
+            <div class="page-head">
+                <a class="icon-btn" href="#" data-view-back title="Back" aria-label="Back">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" d="M19 12H5M11 5l-7 7 7 7"/></svg>
+                </a>
+                <div class="page-title">
+                    <span class="page-title-main">TVFS</span>
+                    <span class="page-title-sub">File Check</span>
+                </div>
+            </div>
+            <p class="chk-subtitle">Paste a files.tomasekvalla.cz link to inspect codec, bitrate, resolution, frame rate and more via ffprobe.</p>
+            <div class="chk-input-row">
+                <input type="text" id="chkUrlInput" class="chk-url-input" placeholder="https://files.tomasekvalla.cz/files/videos/..." autocomplete="off" spellcheck="false">
+                <button class="chk-probe-btn" id="chkProbeBtn"><span class="chk-spinner"></span><span id="chkProbeBtnText">Inspect</span></button>
+            </div>
+            <div class="chk-error" id="chkError"></div>
+            <div class="chk-results" id="chkResults">
+                <div class="chk-section">
+                    <span class="chk-label">Container / Format</span>
+                    <div class="chk-format-card" id="chkFormatCard"></div>
+                </div>
+                <div class="chk-divider"></div>
+                <div class="chk-section">
+                    <span class="chk-label">Streams</span>
+                    <div class="chk-streams" id="chkStreams"></div>
+                </div>
+                <button class="chk-raw-toggle" id="chkRawToggle">Show raw ffprobe JSON</button>
+                <pre class="chk-raw" id="chkRaw"></pre>
+            </div>
+        </div>
+        <div class="glass-card" id="linksCard">
+            <div class="info-cards-row">
+                <a class="info-card" href="https://github.com/TomasekValla/TVFS" target="_blank">
+                    <img src="/github.webp" class="info-card-icon" alt="GitHub">
+                    <div class="info-card-text">
+                        <span class="info-card-title">View source on GitHub</span>
+                        <span class="info-card-sub">Don't trust, verify</span>
+                    </div>
+                </a>
+                <a class="info-card" href="https://files.tomasekvalla.cz/whitepaper.pdf" target="_blank">
+                    <img src="/paper.webp" class="info-card-icon" alt="Whitepaper">
+                    <div class="info-card-text">
+                        <span class="info-card-title">View official whitepaper</span>
+                    </div>
+                </a>
+                <a class="info-card" href="#check">
+                    <img src="/icon.png" class="info-card-icon" alt="Check files">
+                    <div class="info-card-text">
+                        <span class="info-card-title">Check files</span>
+                    </div>
+                </a>
+            </div>
+        </div>
         </div>
 
         <div class="glass-card" style="margin-top:18px;" id="settingsCard">
@@ -1783,7 +1960,7 @@
                 <p><strong>DATA COLLECTION NOTICE:</strong> We only collect data that is essential to keep the service functional, stable, and secure. This includes session tokens (so you don't have to log in every time) and your upload history for cross-device syncing. For security reasons, we also automatically log certain metadata for every transaction (including initiated or unfinished uploads). This includes the precise time, expiration date, file details, and network routing information (including your IP address and geographic location data). This data is securely stored for 4 months. It is never shared with third parties, and the site administrator (more details on who that is can be found on the <a href="https://files.tomasekvalla.cz/privacy" target="_blank">privacy page</a>) does not intentionally inspect it unless a violation occurs. <em>Note on Cloudflare:</em> We use Cloudflare to ensure security and connectivity. They automatically process basic network metadata to protect the site from attacks. You can learn more about how they handle data in their <a href="https://www.cloudflare.com/privacypolicy/" target="_blank">privacy policy</a>.</p>
             </div>
         </div>
-        <div class="glass-card view" id="settingsView">
+        <div class="glass-card view side-panel" id="settingsView">
             <div class="page-head">
                 <a class="icon-btn" href="#" data-view-back title="Back" aria-label="Back">
                     <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" d="M19 12H5M11 5l-7 7 7 7"/></svg>
@@ -1815,6 +1992,17 @@
                         </div>
                     </div>
                     <div class="setting-explain"><span class="setting-explain-text">Frosted glass cards: the cards blur and saturate the background behind them. Off = flat translucent cards, lighter on weak phones and laptops.</span></div>
+                </div>
+                <div class="setting-card">
+                    <div class="setting-card-row">
+                        <span class="setting-card-title">Layout</span>
+                        <div class="tri-switch" id="layoutSwitch">
+                            <button class="tri-btn active" data-val="normal">Normal</button>
+                            <button class="tri-btn" data-val="compact">Compact</button>
+                        </div>
+                    </div>
+                    <div class="setting-explain"><span class="setting-explain-text">Compact = less space around and between the cards, so more fits on the screen without scrolling.</span></div>
+                    <button type="button" class="layout-reset" id="layoutResetBtn">Reset layout</button>
                 </div>
                 <div class="setting-card">
                     <div class="setting-card-row">
@@ -1859,6 +2047,18 @@
                     </div>
                     <div class="setting-explain">
                         <span class="setting-explain-text">Reveals a standalone sharing mode — files are shared as-is (no client-side encryption), and the server refuses to hand out the file bytes to anyone who isn't logged in to TVFS. Off by default.</span>
+                    </div>
+                </div>
+
+                <div class="setting-card" id="appBarCard">
+                    <div class="setting-card-row">
+                        <span class="setting-card-title">naTiVeFS app bar</span>
+                        <div class="tri-switch">
+                            <button class="tri-btn" id="appBarResetBtn" type="button">Reset</button>
+                        </div>
+                    </div>
+                    <div class="setting-explain">
+                        <span class="setting-explain-text" id="appBarStatus"></span>
                     </div>
                 </div>
 
@@ -1956,36 +2156,6 @@
         </div>
 
 
-        <div class="glass-card view" id="checkView">
-            <div class="page-head">
-                <a class="icon-btn" href="#" data-view-back title="Back" aria-label="Back">
-                    <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" d="M19 12H5M11 5l-7 7 7 7"/></svg>
-                </a>
-                <div class="page-title">
-                    <span class="page-title-main">TVFS</span>
-                    <span class="page-title-sub">File Check</span>
-                </div>
-            </div>
-            <p class="chk-subtitle">Paste a files.tomasekvalla.cz link to inspect codec, bitrate, resolution, frame rate and more via ffprobe.</p>
-            <div class="chk-input-row">
-                <input type="text" id="chkUrlInput" class="chk-url-input" placeholder="https://files.tomasekvalla.cz/files/videos/..." autocomplete="off" spellcheck="false">
-                <button class="chk-probe-btn" id="chkProbeBtn"><span class="chk-spinner"></span><span id="chkProbeBtnText">Inspect</span></button>
-            </div>
-            <div class="chk-error" id="chkError"></div>
-            <div class="chk-results" id="chkResults">
-                <div class="chk-section">
-                    <span class="chk-label">Container / Format</span>
-                    <div class="chk-format-card" id="chkFormatCard"></div>
-                </div>
-                <div class="chk-divider"></div>
-                <div class="chk-section">
-                    <span class="chk-label">Streams</span>
-                    <div class="chk-streams" id="chkStreams"></div>
-                </div>
-                <button class="chk-raw-toggle" id="chkRawToggle">Show raw ffprobe JSON</button>
-                <pre class="chk-raw" id="chkRaw"></pre>
-            </div>
-        </div>
     </div>
     </div>
 
@@ -2329,6 +2499,18 @@
         // ============================================================
         // Each entry: { file: File, customName: string (base without ext), ext: string (with dot, e.g. ".mp4") }
         var selectedFiles = [];
+        // Files recorded with the voice recorder, keyed by size + lastModified: the key survives the File re-wrapping done by rename / anonymize
+        var voiceNoteKeys = new Set();
+        function voiceKey(f) { return f.size + ':' + f.lastModified; }
+        var AUDIO_EXT_RE = /\.(mp3|ogg|oga|opus|flac|wav|m4a|aac|wma|aiff?|weba|mka|amr)$/i;
+        function isAudioFile(f) { return (f.type || '').indexOf('audio/') === 0 || AUDIO_EXT_RE.test(f.name || ''); }
+        // Audio files the user switched to "Voice note" in their row (same key as above, so it survives rename / anonymize)
+        var voiceChoiceKeys = new Set();
+        // recorder files are always voice notes; other audio files when switched to "Voice note" in their own row
+        function isVoiceNote(f) {
+            var k = voiceKey(f);
+            return voiceNoteKeys.has(k) || (voiceChoiceKeys.has(k) && isAudioFile(f));
+        }
 
         // Try to sniff extension from MIME type (basic)
         function extFromMime(mime) {
@@ -2531,11 +2713,30 @@
         // ============================================================
         var currentView = '';
         var mainScrollTop = 0;
+        var mqDesktop = window.matchMedia('(min-width: 900px)');
+        var mqThreeCol = window.matchMedia('(min-width: 1200px)');
+        // wide windows show Settings (1200+) and File Check (900+) all the time: their links only point at them
+        function alwaysShown(v) { return (v === 'settings' && mqThreeCol.matches) || (v === 'check' && mqDesktop.matches); }
+        // quiet = the page just loaded with this hash: no focus grab
+        function pulseCard(v, quiet) {
+            var p = document.getElementById(v + 'View');
+            if (p.scrollIntoView) p.scrollIntoView({ block: 'nearest' });
+            if (!window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+                p.classList.remove('pulse'); void p.offsetWidth; p.classList.add('pulse');
+            }
+            if (v === 'check' && !quiet) chk.input.focus();
+        }
+        var viewReady = false;
         var scrollWrap = document.querySelector('.scroll-wrap');
 
         function applyView() {
             var v = location.hash.replace('#', '');
             if (v !== 'settings' && v !== 'check') v = '';
+            if (alwaysShown(v)) {
+                history.replaceState(null, '', location.pathname + location.search);
+                pulseCard(v, !viewReady);
+                v = '';
+            }
             if (v === currentView) return;
             if (currentView === '') mainScrollTop = scrollWrap.scrollTop;
             document.body.classList.remove('view-settings', 'view-check');
@@ -2557,11 +2758,84 @@
         document.querySelectorAll('a[href="#settings"], a[href="#check"]').forEach(function(a) {
             a.addEventListener('click', function(e) {
                 e.preventDefault();
+                var target = a.getAttribute('href').slice(1);
+                if (alwaysShown(target)) { pulseCard(target); return; }
                 history.pushState({ tvfsView: true }, '', a.getAttribute('href'));
                 applyView();
             });
         });
         window.addEventListener('popstate', applyView);
+
+        // ============================================================
+        // DESKTOP LAYOUT - the columns themselves are pure CSS (see "Desktop
+        // layout"). Here: the cards glide to their new place when the layout
+        // switches (FLIP: remember where each card was, let CSS move it, then
+        // animate from the old place). Work happens only while the window is
+        // resized; nothing runs at rest.
+        // ============================================================
+        try { (function() {
+            var cards = ['mainCard', 'settingsCard', 'recentCard', 'settingsView', 'checkView', 'linksCard']
+                .map(function(id) { return document.getElementById(id); });
+            var mqs = [mqDesktop, mqThreeCol, window.matchMedia('(min-width: 1800px)')];
+            var reduce = window.matchMedia('(prefers-reduced-motion: reduce)');
+            var easing = 'cubic-bezier(0.2, 0.8, 0.2, 1)';
+            var last = null, pending = false;
+            function rects() { return cards.map(function(c) { return c.getBoundingClientRect(); }); }
+            function snapshot() {
+                // a running glide would be measured mid-flight
+                cards.forEach(function(c) { if (c.getAnimations) c.getAnimations().forEach(function(a) { a.cancel(); }); });
+                last = rects(); pending = false;
+            }
+            // keep the layout of the previous frame: a media query change is reported after the new layout applies.
+            // Height-only resizes (phone address bar showing/hiding) change no layout column: skipped, no measuring.
+            var lastW = window.innerWidth;
+            window.addEventListener('resize', function() {
+                if (window.innerWidth === lastW) return;
+                lastW = window.innerWidth;
+                if (!pending) { pending = true; requestAnimationFrame(snapshot); }
+            });
+            function glide() {
+                if (!last || reduce.matches) { snapshot(); return; }
+                var before = last, after = rects();
+                cards.forEach(function(c, i) {
+                    var a = before[i], b = after[i];
+                    if (!b.width) return;
+                    if (!a.width) {
+                        c.animate([{ opacity: 0, transform: 'translateY(12px) scale(0.98)' }, { opacity: 1, transform: 'none' }],
+                                  { duration: 380, easing: easing });
+                        return;
+                    }
+                    var dx = a.left - b.left, dy = a.top - b.top;
+                    if (Math.abs(dx) < 1 && Math.abs(dy) < 1) return;
+                    c.animate([{ transform: 'translate(' + dx + 'px,' + dy + 'px)' }, { transform: 'none' }],
+                              { duration: 460, easing: easing });
+                });
+                snapshot();
+            }
+            mqs.forEach(function(mq) {
+                var onChange = function() {
+                    if (alwaysShown(currentView)) {
+                        history.replaceState(null, '', location.pathname + location.search);
+                        applyView();
+                    }
+                    glide();
+                };
+                if (mq.addEventListener) mq.addEventListener('change', onChange); else if (mq.addListener) mq.addListener(onChange); // Safari < 14
+            });
+            // first paint on a wide window: the side panels slide in once per browser session, not on every reload
+            var introSeen = false;
+            try { introSeen = sessionStorage.getItem('tvfs_intro') === '1'; sessionStorage.setItem('tvfs_intro', '1'); } catch (e) {}
+            if (mqs[0].matches && !reduce.matches && !introSeen) {
+                var from = { recentCard: 18, checkView: 18, linksCard: 18, settingsView: -18 };
+                Object.keys(from).forEach(function(id, i) {
+                    var el = document.getElementById(id);
+                    if (!el.getBoundingClientRect().width) return;
+                    el.animate([{ opacity: 0, transform: 'translateX(' + from[id] + 'px)' }, { opacity: 1, transform: 'none' }],
+                               { duration: 520, delay: 120 + i * 70, easing: easing, fill: 'backwards' });
+                });
+            }
+            snapshot();
+        })(); } catch (e) { /* cosmetic only: the uploader must start even if this fails */ }
         document.addEventListener('keydown', function(e) {
             if (e.key === 'Escape' && currentView && document.activeElement !== chk.input) {
                 document.querySelector('#' + currentView + 'View [data-view-back]').click();
@@ -2586,15 +2860,28 @@
             return (v === '0' || v === '30' || v === '60') ? v : 'full';
         }
         function syncAppearanceSwitches() {
+            setSwitch('layoutSwitch', document.body.classList.contains('compact') ? 'compact' : 'normal');
             setSwitch('themeSwitch', document.body.classList.contains('light-mode') ? 'light' : 'dark');
             setSwitch('glassSwitch', document.body.classList.contains('no-glass') ? 'off' : 'on');
             setSwitch('bgMotionSwitch', bgMotionPref());
         }
         if (localStorage.getItem('tvfs_glass') === 'off') document.body.classList.add('no-glass');
+        try { if (localStorage.getItem('tvfs_layout') === 'compact') document.body.classList.add('compact'); } catch (e) {}
         syncAppearanceSwitches();
 
         onSwitch('themeSwitch', function(val) {
             if ((val === 'light') !== document.body.classList.contains('light-mode')) els.themeToggle.click();
+        });
+        onSwitch('layoutSwitch', function(val) {
+            document.body.classList.toggle('compact', val === 'compact');
+            try { localStorage.setItem('tvfs_layout', val); } catch (e) {}
+            syncAppearanceSwitches();
+        });
+        // back to the default layout (later also card positions)
+        document.getElementById('layoutResetBtn').addEventListener('click', function() {
+            document.body.classList.remove('compact');
+            try { localStorage.removeItem('tvfs_layout'); } catch (e) {}
+            syncAppearanceSwitches();
         });
         onSwitch('glassSwitch', function(val) {
             document.body.classList.toggle('no-glass', val === 'off');
@@ -2794,6 +3081,7 @@
             chk.results.style.display = 'flex';
         }
         applyView();
+        viewReady = true;
 
         // ============================================================
         // MAGIX SWITCH
@@ -5117,6 +5405,7 @@
                 '<div class="voice-status"><span class="voice-dot"></span><span class="voice-status-text">Requesting microphone…</span></div>' +
                 '<div class="voice-time">0:00</div>' +
                 '<div class="voice-wave" aria-hidden="true"></div>' +
+                '<div class="voice-gain" hidden></div>' +
                 '<div class="voice-format"></div>' +
                 '<div class="voice-row voice-row-main"></div>' +
                 '<div class="voice-row voice-row-review"></div>' +
@@ -5126,6 +5415,7 @@
             var timerEl = panel.querySelector('.voice-time');
             var waveEl = panel.querySelector('.voice-wave');
             var formatEl = panel.querySelector('.voice-format');
+            var gainEl = panel.querySelector('.voice-gain');
             var rowMain = panel.querySelector('.voice-row-main');
             var rowReview = panel.querySelector('.voice-row-review');
             var cancelBtn = panel.querySelector('.voice-cancel');
@@ -5231,6 +5521,12 @@
             var ctx = null, analyser = null, levelTimer = null, sampleBuf = null;
             var audioEl = null, audioUrl = null, take = null, duration = 0, raf = 0;
             var micSrc = null, pcm = null, pcmModule = null, autoStop = null, closed = false;
+            // input level chain: mic -> level (0-200 %) -> auto level -> soft clipper -> recorder / FLAC tap / meter
+            var gainNode = null, agcNode = null, outNode = null, recDest = null, preAn = null, preBuf = null, agcTimer = null, meterTimer = null;
+            var gainPct = parseInt(localStorage.getItem('tvfs_voice_gain'), 10);
+            if (!(gainPct >= 0 && gainPct <= 200)) gainPct = 100;
+            var autoLevel = localStorage.getItem('tvfs_voice_auto') === '1';
+            var agcDb = 0, meterEl = null, gainValEl = null;
 
             function fmtTimer(sec) {
                 var m = Math.floor(sec / 60), s = Math.floor(sec % 60);
@@ -5262,11 +5558,131 @@
                 rowReview.style.display = review.length ? '' : 'none';
             }
 
+            // Soft clipper: linear up to 0.8, then rounds off towards 0.95, so nothing ever hard-clips
+            function clipCurve() {
+                var n = 2049, c = new Float32Array(n);
+                for (var i = 0; i < n; i++) {
+                    var x = i / (n - 1) * 2 - 1, a = Math.abs(x);
+                    c[i] = (a <= 0.8 ? a : 0.8 + 0.15 * Math.tanh((a - 0.8) / 0.15)) * (x < 0 ? -1 : 1);
+                }
+                return c;
+            }
+            function buildChain() {
+                gainNode = ctx.createGain();
+                gainNode.gain.value = gainPct / 100;
+                agcNode = ctx.createGain();
+                var clip = ctx.createWaveShaper();
+                clip.curve = clipCurve();
+                clip.oversample = '2x';
+                preAn = ctx.createAnalyser();
+                preAn.fftSize = 2048;
+                preBuf = new Float32Array(preAn.fftSize);
+                analyser = ctx.createAnalyser();
+                analyser.fftSize = 2048;
+                sampleBuf = new Float32Array(analyser.fftSize);
+                micSrc.connect(gainNode);
+                gainNode.connect(preAn);
+                gainNode.connect(agcNode);
+                agcNode.connect(clip);
+                clip.connect(analyser);
+                outNode = clip;
+                if (ctx.createMediaStreamDestination) {
+                    recDest = ctx.createMediaStreamDestination();
+                    recDest.channelCount = Math.min(2, micSrc.channelCount || 1);
+                    recDest.channelCountMode = 'explicit';
+                    clip.connect(recDest);
+                }
+                agcDb = 0;
+                agcTimer = setInterval(agcStep, 50);
+                meterTimer = setInterval(meterStep, 50);
+            }
+            // Automatic level: a slow gain that moves the voice towards -18 dBFS RMS (attack 0.15 s, release 1.5 s),
+            // at most +18 dB, never more than the peaks allow (-1 dBFS). Pauses hold the gain.
+            function agcStep() {
+                if (!preAn) return;
+                if (autoLevel) {
+                    preAn.getFloatTimeDomainData(preBuf);
+                    var sum = 0, peak = 0;
+                    for (var i = 0; i < preBuf.length; i++) { var v = preBuf[i], a = Math.abs(v); sum += v * v; if (a > peak) peak = a; }
+                    var rmsDb = 20 * Math.log10(Math.max(Math.sqrt(sum / preBuf.length), 1e-6));
+                    var peakDb = 20 * Math.log10(Math.max(peak, 1e-6));
+                    if (rmsDb < -50) return;
+                    var want = Math.min(Math.max(-18 - rmsDb, -12), 18, -1 - peakDb);
+                    var tau = want < agcDb ? 0.15 : 1.5;
+                    agcDb += (want - agcDb) * (1 - Math.exp(-0.05 / tau));
+                } else {
+                    agcDb = 0;
+                }
+                agcNode.gain.setTargetAtTime(Math.pow(10, agcDb / 20), ctx.currentTime, 0.04);
+            }
+            function meterStep() {
+                if (!analyser || !meterEl) return;
+                analyser.getFloatTimeDomainData(sampleBuf);
+                var peak = 0;
+                for (var i = 0; i < sampleBuf.length; i++) { var a = Math.abs(sampleBuf[i]); if (a > peak) peak = a; }
+                var db = 20 * Math.log10(Math.max(peak, 1e-6));
+                meterEl.style.width = Math.max(0, Math.min(100, (db + 60) / 60 * 100)) + '%';
+                meterEl.classList.toggle('hot', db > -3);
+            }
+            function setGain(pct) {
+                gainPct = pct;
+                localStorage.setItem('tvfs_voice_gain', String(pct));
+                if (gainNode) gainNode.gain.setTargetAtTime(pct / 100, ctx.currentTime, 0.02);
+                if (gainValEl) gainValEl.textContent = pct + ' %';
+            }
+            function renderGain() {
+                gainEl.innerHTML = '';
+                if (!micSrc) { gainEl.hidden = true; return; }
+                gainEl.hidden = false;
+                var row = document.createElement('div');
+                row.className = 'voice-gain-row';
+                var lbl = document.createElement('span');
+                lbl.textContent = 'Input level';
+                var range = document.createElement('input');
+                range.type = 'range'; range.min = '0'; range.max = '200'; range.step = '5'; range.value = String(gainPct);
+                range.setAttribute('aria-label', 'Input level');
+                gainValEl = document.createElement('span');
+                gainValEl.className = 'voice-gain-val';
+                gainValEl.textContent = gainPct + ' %';
+                range.addEventListener('input', function() { setGain(parseInt(range.value, 10)); });
+                row.appendChild(lbl); row.appendChild(range); row.appendChild(gainValEl);
+                var meter = document.createElement('div');
+                meter.className = 'voice-meter';
+                meter.setAttribute('aria-hidden', 'true');
+                meterEl = document.createElement('i');
+                meter.appendChild(meterEl);
+                var row2 = document.createElement('div');
+                row2.className = 'voice-gain-row';
+                var lbl2 = document.createElement('span');
+                lbl2.textContent = 'Auto level';
+                lbl2.title = 'Keeps the voice at a steady level while you record (gentle automatic gain, up to +18 dB, with a limiter).';
+                var sw = document.createElement('div');
+                sw.className = 'tri-switch';
+                [['0', 'Off'], ['1', 'On']].forEach(function(o) {
+                    var b = document.createElement('button');
+                    b.type = 'button';
+                    b.className = 'tri-btn' + ((autoLevel ? '1' : '0') === o[0] ? ' active' : '');
+                    b.textContent = o[1];
+                    b.addEventListener('click', function(e) {
+                        e.stopPropagation();
+                        autoLevel = o[0] === '1';
+                        localStorage.setItem('tvfs_voice_auto', o[0]);
+                        Array.prototype.forEach.call(sw.children, function(c, i) { c.classList.toggle('active', String(i) === o[0]); });
+                    });
+                    sw.appendChild(b);
+                });
+                row2.appendChild(lbl2); row2.appendChild(sw);
+                gainEl.appendChild(row); gainEl.appendChild(meter); gainEl.appendChild(row2);
+            }
+
             function stopLevels() {
                 if (levelTimer) { clearInterval(levelTimer); levelTimer = null; }
             }
             function stopTracks() {
                 stopLevels();
+                if (agcTimer) { clearInterval(agcTimer); agcTimer = null; }
+                if (meterTimer) { clearInterval(meterTimer); meterTimer = null; }
+                gainNode = agcNode = outNode = recDest = preAn = null;
                 if (stream) stream.getTracks().forEach(function(t) { t.stop(); });
                 stream = null;
                 if (ctx) { ctx.close().catch(function() {}); ctx = null; }
@@ -5306,6 +5722,7 @@
                 drawBars('idle', 0);
                 waveEl.classList.remove('seekable');
                 setRows([startBtn], []);
+                renderGain();
                 renderFormatPicker();
                 setStatus('Ready when you are');
                 timerEl.textContent = '0:00';
@@ -5360,7 +5777,8 @@
                     var ext = extFromRecorderMime(mime);
                     var name = 'voice-note-' + new Date().toISOString().replace(/[:.]/g, '-') + ext;
                     // without the ";codecs=..." part: the server sorts files by the plain type
-                    var file = new File([blob], name, { type: (mime || 'audio/webm').split(';')[0] });
+                    var file = new File([blob], name, { type: (mime || 'audio/webm').split(';')[0], lastModified: Date.now() });
+                    voiceNoteKeys.add(voiceKey(file));
                     closePanel();
                     addFiles([file]);
                 };
@@ -5450,7 +5868,7 @@
                     // a node only runs when it leads to the speakers: through a muted gain
                     var mute = ctx.createGain();
                     mute.gain.value = 0;
-                    micSrc.connect(node);
+                    (outNode || micSrc).connect(node);
                     node.connect(mute);
                     mute.connect(ctx.destination);
                     pcm = { node: node, mute: mute, got: got, fmt: fmt };
@@ -5464,7 +5882,7 @@
                     p.node.port.postMessage('flush');
                     setTimeout(resolve, 600);
                 }).then(function() {
-                    try { micSrc.disconnect(p.node); } catch (err) {}
+                    try { (outNode || micSrc).disconnect(p.node); } catch (err) {}
                     p.node.disconnect();
                     p.mute.disconnect();
                     var nch = got.nch || 1, channels = [], off = 0;
@@ -5489,7 +5907,7 @@
                 starting = true;
                 new Promise(function(resolve) {
                     if (fmt.pcm) { resolve(startPcm(fmt)); return; }
-                    var rec = new MediaRecorder(stream, { mimeType: mime, audioBitsPerSecond: fmt.bits });
+                    var rec = new MediaRecorder(recDest ? recDest.stream : stream, { mimeType: mime, audioBitsPerSecond: fmt.bits });
                     rec.ondataavailable = function(ev) { if (ev.data && ev.data.size > 0) chunks.push(ev.data); };
                     rec.onstop = function() {
                         if (timerInterval) clearInterval(timerInterval);
@@ -5576,12 +5994,9 @@
                         var AC = window.AudioContext || window.webkitAudioContext;
                         var rate = s.getAudioTracks()[0].getSettings().sampleRate;
                         try { ctx = rate ? new AC({ sampleRate: rate }) : new AC(); } catch (err) { ctx = new AC(); }
-                        analyser = ctx.createAnalyser();
-                        analyser.fftSize = 2048;
-                        sampleBuf = new Float32Array(analyser.fftSize);
                         micSrc = ctx.createMediaStreamSource(s);
-                        micSrc.connect(analyser);
-                    } catch (err) { analyser = null; micSrc = null; }
+                        buildChain();
+                    } catch (err) { analyser = null; micSrc = null; outNode = null; recDest = null; }
                     if (!micSrc) {
                         formatMimes = formatMimes.map(function(m, i) { return VOICE_FORMATS[i].pcm ? '' : m; });
                         fixFormatIdx();
@@ -5608,12 +6023,37 @@
         });
 
         // ============================================================
+        // "Open in the naTiVeFS app" bar of the generated pages (audio players, readers): shows what is remembered in this browser
+        // and lets the user undo it. The keys are the ones appOffer.js writes on those pages (same origin).
+        (function() {
+            var KEYS = ['tvfs_app_never', 'tvfs_app_offer_hide', 'tvfs_app_auto_off', 'tvfs_app_always', 'tvfs_app_oks', 'tvfs_app_auto_last'];
+            var statusEl = document.getElementById('appBarStatus'), btn = document.getElementById('appBarResetBtn');
+            if (!statusEl || !btn) return;
+            function get(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
+            function describe() {
+                var parts = [];
+                if (get('tvfs_app_never') === '1') parts.push('"Don\'t show again" is on: the bar never appears.');
+                if (Date.now() < (parseInt(get('tvfs_app_offer_hide'), 10) || 0)) parts.push('The bar was closed for 14 days.');
+                if (get('tvfs_app_auto_off') === '1') parts.push('"Stay in browser" is on: links are never opened in the app automatically.');
+                if (get('tvfs_app_always') === '1') parts.push('"Always open in the app" is on.');
+                return (parts.length ? parts.join(' ') + ' ' : 'Nothing is remembered: audio and text pages offer to open in the desktop app. ')
+                    + 'Reset forgets all of this. The bar is never shown on phones and tablets.';
+            }
+            statusEl.textContent = describe();
+            btn.addEventListener('click', function() {
+                KEYS.forEach(function(k) { try { localStorage.removeItem(k); } catch (e) {} });
+                statusEl.textContent = describe();
+            });
+        })();
+
+        // ============================================================
         // FILE LIST RENDERING
         // ============================================================
         function renderFileList() {
             els.errorDisplay.style.display = 'none';
             if (selectedFiles.length === 0) {
                 els.fileListSection.classList.remove('visible');
+                voiceChoiceKeys.clear();
                 return;
             }
             els.fileListSection.classList.add('visible');
@@ -5757,7 +6197,48 @@
                     row.appendChild(anonBtn);
                     row.appendChild(sizeSpan);
                     row.appendChild(removeBtn);
-                    els.fileList.appendChild(row);
+
+                    // audio: a second line to choose how this file is uploaded
+                    var item = document.createElement('div');
+                    item.className = 'file-entry';
+                    item.appendChild(row);
+                    if (isAudioFile(f)) {
+                        item.classList.add('two-line');
+                        var sub = document.createElement('div');
+                        sub.className = 'file-row-sub';
+                        var lbl = document.createElement('span');
+                        lbl.className = 'file-row-sub-label';
+                        lbl.textContent = 'Upload as';
+                        sub.appendChild(lbl);
+                        var key = voiceKey(f);
+                        if (voiceNoteKeys.has(key)) {
+                            var fixed = document.createElement('span');
+                            fixed.className = 'file-kind-fixed';
+                            fixed.textContent = 'Voice note (recorded here)';
+                            sub.appendChild(fixed);
+                        } else {
+                            var kind = document.createElement('div');
+                            kind.className = 'file-kind';
+                            kind.setAttribute('role', 'group');
+                            kind.setAttribute('aria-label', 'Upload ' + (entry.customName + entry.ext) + ' as');
+                            [['audio', 'Audio'], ['voice', 'Voice note']].forEach(function(opt) {
+                                var b = document.createElement('button');
+                                b.type = 'button';
+                                b.textContent = opt[1];
+                                var on = (opt[0] === 'voice') === voiceChoiceKeys.has(key);
+                                b.className = on ? 'active' : '';
+                                b.setAttribute('aria-pressed', on ? 'true' : 'false');
+                                b.addEventListener('click', function() {
+                                    if (opt[0] === 'voice') voiceChoiceKeys.add(key); else voiceChoiceKeys.delete(key);
+                                    renderFileList();
+                                });
+                                kind.appendChild(b);
+                            });
+                            sub.appendChild(kind);
+                        }
+                        item.appendChild(sub);
+                    }
+                    els.fileList.appendChild(item);
                 })(i);
             }
 
@@ -5766,8 +6247,15 @@
 
             requestAnimationFrame(function() {
                 setupMarqueeForList(els.fileList.querySelectorAll('.file-row-name'));
+                updateFileListFade();
             });
         }
+        function updateFileListFade() {
+            var l = els.fileList;
+            l.classList.toggle('more-below', l.scrollTop + l.clientHeight < l.scrollHeight - 2);
+        }
+        els.fileList.addEventListener('scroll', updateFileListFade, { passive: true });
+        window.addEventListener('resize', function() { if (selectedFiles.length) updateFileListFade(); });
 
         function commitRename(input, idx, nameSpan, nameInner, renameBtn) {
             // Guard: if input is already detached (blur fired after click committed), bail
@@ -6262,6 +6750,7 @@
                 formData.append('removeTimestamp', state.tier === 2 ? 'true' : 'false');
                 formData.append('expirationMinutes', expirationMinutes);
                 if (batchId) formData.append('batchId', batchId);
+                if (isVoiceNote(file)) formData.append('voiceNote', '1');
 
                 var xhr = new XMLHttpRequest();
                 // This single request is left alone by Pause (it always finishes
@@ -6542,6 +7031,7 @@
                 if (!isDynamic) initBody.totalChunks = totalChunks;
                 if (password) initBody.password = password;
                 if (batchId) initBody.batchId = batchId;
+                if (isVoiceNote(file)) initBody.voiceNote = true;
 
                 var initR = await fetch('/api/upload/init', {
                     method: 'POST',

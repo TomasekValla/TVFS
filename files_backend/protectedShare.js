@@ -44,6 +44,8 @@ const audioPlayerLib = require('./audioPlayer'); // for the full BPM/waveform pl
 const { findUser, sha256 } = require('./userIdentity');
 
 const router = express.Router();
+const INIT_BODY_LIMIT = '2mb';
+const INIT_BODY_PATH = '/api/protected/upload/init';
 
 // ─── Directories ─────────────────────────────────────────────────────────
 
@@ -212,7 +214,7 @@ const upload = multer({
 // and /upload/complete (chunked, for anything too big to comfortably fit
 // in one request). Takes fileEntries that already have their final bytes
 // sitting at `path`, on shareDir.
-function finalizeShare(shareId, shareDir, fileEntries, totalSize, owner, expirationMinutesRaw) {
+async function finalizeShare(shareId, shareDir, fileEntries, totalSize, owner, expirationMinutesRaw) {
     const expiresAt = Date.now() + resolveExpirationMinutes(expirationMinutesRaw) * 60 * 1000;
 
     const pageFilename = `${shareId}.html`;
@@ -250,7 +252,7 @@ function finalizeShare(shareId, shareDir, fileEntries, totalSize, owner, expirat
                 entry.toolLink = `https://files.tomasekvalla.cz/files/protected/tools/${toolFilename}`;
                 entry.toolPagePath = toolPagePath;
             } else if (category === 'audio') {
-                const result = audioPlayerLib.maybeCreateProtectedAudioPlayer(
+                const result = await audioPlayerLib.maybeCreateProtectedAudioPlayer(
                     baseName, mimeType, entry.path, SHARE_TOOLS_DIR, contentUrl, shareId, link
                 );
                 if (result) {
@@ -353,7 +355,7 @@ router.post(
                 });
             }
 
-            const { link, expiresAt, files } = finalizeShare(shareId, shareDir, fileEntries, totalSize, owner, req.body.expirationMinutes);
+            const { link, expiresAt, files } = await finalizeShare(shareId, shareDir, fileEntries, totalSize, owner, req.body.expirationMinutes);
 
             requestLogger.logEvent(req, 'protected_share_upload_complete', {
                 shareId, fileCount: fileEntries.length, totalSize, expiresAt, ownerUsername: owner.username
@@ -417,7 +419,9 @@ function withChunkLock(uploadId, fn) {
 
 // ─── POST /api/protected/upload/init ─────────────────────────────────────
 // Body: { files: [{relativePath, size}, ...], expirationMinutes }
-router.post('/upload/init', (req, res) => {
+// A long file list (200 files with deep paths) outgrows the default 100 KB body limit, so this route has its own
+// 2 MB parsers; index.js leaves exactly this path to them (INIT_BODY_PATH) and every other route keeps the default.
+router.post('/upload/init', express.urlencoded({ extended: true, limit: INIT_BODY_LIMIT }), express.json({ limit: INIT_BODY_LIMIT }), (req, res) => {
     const owner = resolveOwner(req);
     if (!owner) return res.status(401).json({ error: 'You must be logged in to TVFS to use this mode' });
 
@@ -558,7 +562,7 @@ router.post('/upload/complete', async (req, res) => {
             fileEntries.push({ index: fi, path: dest, relativePath: f.relativePath, size: stats.size, mimeType: f.mimeType || null });
         }
 
-        const { link, expiresAt, files } = finalizeShare(shareId, shareDir, fileEntries, totalSize, owner, manifest.expirationMinutes);
+        const { link, expiresAt, files } = await finalizeShare(shareId, shareDir, fileEntries, totalSize, owner, manifest.expirationMinutes);
         cleanupChunks();
 
         requestLogger.logEvent(req, 'protected_share_upload_complete', {
@@ -730,6 +734,7 @@ function sweepExpired() {
 
 module.exports = {
     router,
+    INIT_BODY_PATH,
     sweepExpired,
     registry,
     saveRegistry,

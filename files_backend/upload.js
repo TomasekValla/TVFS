@@ -17,6 +17,7 @@ const thumbnails = require('./thumbnails');
 const requestLogger = require('./requestLogger');
 const audioPlayerLib = require('./audioPlayer');
 const safeFs = require('./safeFs');
+const appOffer = require('./appOffer');
 
 // ─── Session Store ───────────────────────────────────────────────────────────
 //
@@ -390,6 +391,18 @@ function getFileType(mimeType) {
     return 'file';
 }
 
+// Voice note flag from a request: true / 'true' / '1' / 1, and only for audio
+function wantsVoiceNote(raw, mimeType) {
+    const on = raw === true || raw === 1 || raw === 'true' || raw === '1';
+    return on && getFileType(mimeType || '') === 'audio';
+}
+
+// The styled link of an audio upload
+function audioStyledLink(result, originalName, link) {
+    if (result.voiceNote) return `[Voice note - TVFS Voice Player](${link})`;
+    return `[${originalName} - TVFS Audio Player (${audioPlayerLib.formatMetaSummary(result.meta) || 'details n/a'})](${link})`;
+}
+
 function generateFileId() {
     return `f_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
 }
@@ -616,9 +629,11 @@ pre { font-family:var(--content-font); font-size:var(--fs); line-height:1.8; whi
 body.light { --bg:#fafafa; --fg:#1a1a1a; --border:rgba(0,0,0,.1); }
 @media (max-width: 600px) { .content { padding:24px 16px; } .loading, .error { padding:60px 16px; } }
 ${buildReaderChromeCss()}
+${appOffer.css()}
 </style>
 </head>
 <body>
+${appOffer.html({ audio: false })}
 ${buildReaderChromeHtml(originalName, txtUrl, originalName)}
 <div class="content"><pre id="textContent" class="loading">Loading…</pre></div>
 <script>
@@ -849,6 +864,35 @@ function maybeCreateTextReader(storedFilename, originalName, mimeType, expiresAt
 
 // ─── MD Reader ────────────────────────────────────────────────────────────────
 
+// ─── Markdown reader: pinned, integrity-checked libraries and a sanitizing renderer ─────
+// Uploaded Markdown is untrusted and the reader runs on the API origin, so the rendered HTML must be inert:
+// DOMPurify cleans it; if DOMPurify did not load, raw HTML is shown as text and only safe link schemes survive.
+const MD_LIBS_HTML = `<script src="https://cdn.jsdelivr.net/npm/marked@9.1.6/marked.min.js" integrity="sha384-odPBjvtXVM/5hOYIr3A1dB+flh0c3wAT3bSesIOqEGmyUA4JoKf/YTWy0XKOYAY7" crossorigin="anonymous"><\/script>
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3.2.6/dist/purify.min.js" integrity="sha384-JEyTNhjM6R1ElGoJns4U2Ln4ofPcqzSsynQkmEc/KGy6336qAZl70tDLufbkla+3" crossorigin="anonymous"><\/script>`;
+const MD_RENDER_JS = `function renderMd(el,t){
+    var tries=0;
+    function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+    function okUrl(u){var v=String(u||'').replace(/[\\u0000-\\u0020]/g,'');return !/^[a-z][a-z0-9+.\\-]*:/i.test(v)||/^(https?|mailto):/i.test(v);}
+    function go(){
+      if(typeof marked==='undefined'){
+        if(++tries>100){el.textContent=t;return;}
+        setTimeout(go,50);return;
+      }
+      var clean=typeof DOMPurify!=='undefined';
+      if(!renderMd.ready){
+        renderMd.ready=true;
+        marked.use({breaks:true,gfm:true,renderer:{
+          html:function(h){return clean?false:esc(h);},
+          link:function(href,title,text){return okUrl(href)?false:text;},
+          image:function(href,title,text){return okUrl(href)?false:esc(text);}
+        }});
+      }
+      var out=marked.parse(t);
+      el.innerHTML=clean?DOMPurify.sanitize(out):out;
+    }
+    go();
+  }`;
+
 function generateMdReaderHtml(mdUrl, originalName) {
     return `<!DOCTYPE html>
 <html lang="en">
@@ -897,12 +941,14 @@ body.light .md-body strong { color:#000; }
 body.light .md-body blockquote { background:rgba(124,77,255,.06); color:#1a1a1a; opacity:1; }
 @media (max-width:600px) { .content { padding:24px 16px; } }
 ${buildReaderChromeCss()}
+${appOffer.css()}
 </style>
 </head>
 <body>
+${appOffer.html({ audio: false })}
 ${buildReaderChromeHtml(originalName, mdUrl, originalName)}
 <div class="content"><div id="mdContent" class="md-body loading">Loading&#8230;</div></div>
-<script src="https://cdn.jsdelivr.net/npm/marked@9/marked.min.js"><\/script>
+${MD_LIBS_HTML}
 <script>
 ${buildReaderChromeJs('--content-font')}
 
@@ -911,11 +957,8 @@ fetch(${safeScriptJson(mdUrl)})
 .then(function(t){
   var el=document.getElementById('mdContent');
   el.classList.remove('loading');
-  function render(){
-    if(typeof marked!=='undefined'){marked.setOptions({breaks:true,gfm:true});el.innerHTML=marked.parse(t);}
-    else setTimeout(render,50);
-  }
-  render();
+  ${MD_RENDER_JS}
+  renderMd(el,t);
 })
 .catch(function(e){var el=document.getElementById('mdContent');el.className='error';el.textContent='Failed to load: '+e.message;});
 <\/script>
@@ -1020,7 +1063,7 @@ ${buildReaderChromeCss()}
 </div>
 ${buildReaderChromeHtml(originalName, mdUrl, originalName)}
 <div class="content"><div id="mdContent" class="md-body loading">Loading&#8230;</div></div>
-<script src="https://cdn.jsdelivr.net/npm/marked@9/marked.min.js"><\/script>
+${MD_LIBS_HTML}
 <script>
 ${buildReaderChromeJs('--content-font')}
 
@@ -1030,11 +1073,8 @@ function startLoad(){
   .then(function(t){
     var el=document.getElementById('mdContent');
     el.classList.remove('loading');
-    function render(){
-      if(typeof marked!=='undefined'){marked.setOptions({breaks:true,gfm:true});el.innerHTML=marked.parse(t);}
-      else setTimeout(render,50);
-    }
-    render();
+    ${MD_RENDER_JS}
+    renderMd(el,t);
   })
   .catch(function(e){var el=document.getElementById('mdContent');el.className='error';el.textContent='Failed to load: '+e.message;});
 }// ─── Login gate (2026-08) ───────────────────────────────────────────────
@@ -1157,9 +1197,9 @@ function maybeCreateMdReader(storedFilename, originalName, mimeType, expiresAt, 
 // to the audio file on disk (for ffprobe/aubio). publicAudioUrl: the URL
 // the player's <audio> tag will stream from. expiresAt: same expiry as the
 // track, so the player HTML dies alongside it in cleanup.js.
-function maybeCreateAudioPlayer(storedFilename, originalName, mimeType, filePath, publicAudioUrl, expiresAt) {
-    const result = audioPlayerLib.maybeCreateAudioPlayer(
-        storedFilename, originalName, mimeType, filePath, dirs.players, publicAudioUrl
+async function maybeCreateAudioPlayer(storedFilename, originalName, mimeType, filePath, publicAudioUrl, expiresAt, voiceNote) {
+    const result = await audioPlayerLib.maybeCreateAudioPlayer(
+        storedFilename, originalName, mimeType, filePath, dirs.players, publicAudioUrl, undefined, { voiceNote: !!voiceNote }
     );
     if (!result) return null;
 
@@ -1177,13 +1217,14 @@ function maybeCreateAudioPlayer(storedFilename, originalName, mimeType, filePath
         category: 'file',
         uploadedAt: Date.now(),
         expiresAt: expiresAt,
-        isAudioPlayer: true
+        isAudioPlayer: true,
+        ...(result.voiceNote ? { isVoiceNote: true } : {})
     });
     saveRegistry();
 
-    console.log(`🎵 [AUDIO PLAYER] Created ${result.playerFilename} — BPM: ${result.meta.bpm || 'n/a'}, font: ${result.font.label}`);
+    console.log(`🎵 [AUDIO PLAYER] Created ${result.playerFilename} — ${result.voiceNote ? 'voice note' : `BPM: ${result.meta.bpm || 'n/a'}, font: ${result.font.label}`}`);
 
-    return { playerUrl, meta: result.meta, font: result.font };
+    return { playerUrl, meta: result.meta, font: result.font, voiceNote: !!result.voiceNote };
 }
 
 
@@ -1854,7 +1895,7 @@ router.get('/upload/styled-link/:fileId', (req, res) => {
 // ─── POST /api/upload/init ───────────────────────────────────────────────────
 
 router.post('/upload/init', rateLimit({ windowMs: 60 * 1000, max: 20, keyPrefix: 'init:' }), (req, res) => {
-    const { filename, fileSize, mimeType, totalChunks, uploadMode, expirationMinutes, batchId } = req.body;
+    const { filename, fileSize, mimeType, totalChunks, uploadMode, expirationMinutes, batchId, voiceNote } = req.body;
 
     const auth = authenticateRequest(req);
     if (!auth.valid) {
@@ -1887,6 +1928,7 @@ router.post('/upload/init', rateLimit({ windowMs: 60 * 1000, max: 20, keyPrefix:
             status: 'initialized',
             expirationMinutes: expMinutes,
             batchId: batchId || null,
+            ...(wantsVoiceNote(voiceNote, mimeType) ? { voiceNote: true } : {}),
             ownerKey: auth.ownerKey,
             ownerTier: auth.tier
     };
@@ -2192,12 +2234,14 @@ router.post('/upload/complete', async (req, res) => {
         const mdReaderLink = maybeCreateMdReader(finalFilename, manifest.filename, manifest.mimeType, expiresAt, link);
         const mdReaderStyledLink = mdReaderLink ? `[${manifest.filename} - TVFS MD Reader](${mdReaderLink})` : null;
         const audioPlayerResult = (getFileType(manifest.mimeType) === 'audio')
-            ? maybeCreateAudioPlayer(finalFilename, manifest.filename, manifest.mimeType, finalPath, link, expiresAt)
+            ? await maybeCreateAudioPlayer(finalFilename, manifest.filename, manifest.mimeType, finalPath, link, expiresAt, manifest.voiceNote === true)
             : null;
         const audioPlayerLink = audioPlayerResult ? audioPlayerResult.playerUrl : null;
         const audioPlayerStyledLink = audioPlayerResult
-            ? `[${manifest.filename} - TVFS Audio Player (${audioPlayerLib.formatMetaSummary(audioPlayerResult.meta) || 'details n/a'})](${audioPlayerLink})`
+            ? audioStyledLink(audioPlayerResult, manifest.filename, audioPlayerLink)
             : null;
+        // the flag counts only if the server accepted it (real audio, short enough)
+        const isVoiceNote = manifest.voiceNote === true && (!audioPlayerResult || audioPlayerResult.voiceNote);
         registry.files.push({
             id: fileId,
             originalName: manifest.filename,
@@ -2214,6 +2258,7 @@ router.post('/upload/complete', async (req, res) => {
                             mdReaderLink: mdReaderLink || null,
                             audioPlayerLink: audioPlayerLink || null,
                             trackBpm: audioPlayerResult ? audioPlayerResult.meta.bpm : null,
+                            ...(isVoiceNote ? { voiceNote: true } : {}),
                             ownerKey: auth.ownerKey || manifest.ownerKey || null
         });
 
@@ -2253,7 +2298,8 @@ router.post('/upload/complete', async (req, res) => {
                 size: finalStats.size,
                 uploadedAt: Date.now(),
                 expiresAt,
-                thumbnail: null
+                thumbnail: null,
+                ...(isVoiceNote ? { voiceNote: true } : {})
             });
         }
 
@@ -2272,6 +2318,7 @@ router.post('/upload/complete', async (req, res) => {
                  audioPlayerLink: audioPlayerLink || null,
                  audioPlayerStyledLink: audioPlayerStyledLink || null,
                  trackBpm: audioPlayerResult ? audioPlayerResult.meta.bpm : null,
+                 ...(isVoiceNote ? { voiceNote: true } : {}),
                  thumbnailPending: true
         });
 
@@ -2726,12 +2773,15 @@ router.post('/upload', upload.single('file'), async (req, res) => {
     const mdReaderLink = maybeCreateMdReader(filename, originalName, mimetype, expiresAt, link);
     const mdReaderStyledLink = mdReaderLink ? `[${originalName} - TVFS MD Reader](${mdReaderLink})` : null;
 
+    const wantedVoiceNote = wantsVoiceNote(req.body.voiceNote, mimetype);
     const audioPlayerResult = (fileType === 'audio')
-        ? maybeCreateAudioPlayer(filename, originalName, mimetype, req.file.path, link, expiresAt)
+        ? await maybeCreateAudioPlayer(filename, originalName, mimetype, req.file.path, link, expiresAt, wantedVoiceNote)
         : null;
+    // the flag counts only if the server accepted it (real audio, short enough)
+    const isVoiceNote = wantedVoiceNote && (!audioPlayerResult || audioPlayerResult.voiceNote);
     const audioPlayerLink = audioPlayerResult ? audioPlayerResult.playerUrl : null;
     const audioPlayerStyledLink = audioPlayerResult
-        ? `[${originalName} - TVFS Audio Player (${audioPlayerLib.formatMetaSummary(audioPlayerResult.meta) || 'details n/a'})](${audioPlayerLink})`
+        ? audioStyledLink(audioPlayerResult, originalName, audioPlayerLink)
         : null;
 
     registry.files.push({
@@ -2750,6 +2800,7 @@ router.post('/upload', upload.single('file'), async (req, res) => {
                         mdReaderLink: mdReaderLink || null,
                         audioPlayerLink: audioPlayerLink || null,
                         trackBpm: audioPlayerResult ? audioPlayerResult.meta.bpm : null,
+                        ...(isVoiceNote ? { voiceNote: true } : {}),
                         ownerKey: auth.ownerKey || null
     });
 
@@ -2784,7 +2835,8 @@ router.post('/upload', upload.single('file'), async (req, res) => {
             size: fileStats.size,
             uploadedAt: Date.now(),
             expiresAt,
-            thumbnail: null
+            thumbnail: null,
+            ...(isVoiceNote ? { voiceNote: true } : {})
         });
     }
 
@@ -2803,6 +2855,7 @@ router.post('/upload', upload.single('file'), async (req, res) => {
         audioPlayerLink: audioPlayerLink || null,
         audioPlayerStyledLink: audioPlayerStyledLink || null,
         trackBpm: audioPlayerResult ? audioPlayerResult.meta.bpm : null,
+        ...(isVoiceNote ? { voiceNote: true } : {}),
         thumbnailPending: true
     });
 });

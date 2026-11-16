@@ -298,6 +298,7 @@
         .upload-area.capture-open { min-height: 300px; }
         .upload-area.recorder-review { min-height: 460px; }
         .upload-area.recorder-review .voice-gain { display: none; }
+        .upload-area.recorder-review .voice-mic-row { display: none; }
         /* ── Voice recorder (Create mode; same layout as the naTiVeFS app) ── */
         .voice-panel {
             position: absolute; inset: 0; z-index: 20; border-radius: 22px; padding: 20px;
@@ -336,6 +337,22 @@
         .voice-gain-val { min-width: 3.2em; text-align: right; font-variant-numeric: tabular-nums; color: #fff; }
         .voice-gain .tri-btn { padding: 4px 10px; font-size: 0.68rem; color: rgba(255,255,255,0.72); }
         .voice-gain .tri-btn.active { color: #fff; }
+        /* microphone picker: "System default" + the browser's audio inputs (shown once one is known, so it can be found) */
+        .voice-mic-row { display: flex; align-items: center; gap: 9px; width: min(280px, 100%); color: rgba(255,255,255,0.72); font-size: 0.72rem; font-weight: 600; }
+        .voice-mic-row[hidden] { display: none; }
+        .voice-mic {
+            flex: 1; min-width: 0; height: 23px; padding: 0 26px 0 10px; border-radius: 10px;
+            border: 1px solid rgba(255,255,255,0.14); color: #fff; font: inherit; font-size: 0.72rem; font-weight: 600;
+            background: rgba(255,255,255,0.08) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10'%3E%3Cpath d='M1 3l4 4 4-4' fill='none' stroke='%23ffffffb8' stroke-width='1.5'/%3E%3C/svg%3E") no-repeat right 9px center / 10px 10px;
+            -webkit-appearance: none; appearance: none; color-scheme: dark; cursor: pointer;
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis; transition: background-color 0.15s;
+        }
+        .voice-mic:hover { background-color: rgba(255,255,255,0.12); }
+        .voice-mic:focus-visible { outline: 2px solid var(--accent-secondary); outline-offset: 1px; }
+        .voice-mic:disabled { opacity: 0.5; cursor: default; }
+        .voice-mic option { background: #14111f; color: #fff; }
+        /* iOS zooms into form fields with text under 16 px */
+        @supports (-webkit-touch-callout: none) { .voice-mic { font-size: 16px; height: 30px; } }
         .voice-meter { position: relative; height: 7px; border-radius: 4px; background: rgba(255,255,255,0.12); overflow: hidden; }
         .voice-meter i { position: absolute; left: 0; top: 0; bottom: 0; width: 0; border-radius: 4px; background: var(--accent-secondary); transition: width 0.06s linear; }
         .voice-meter i.hot { background: #ff4d4d; }
@@ -433,10 +450,15 @@
         }
         .file-list-clear:hover { background: rgba(255,118,117,0.1); }
         .file-list { display: flex; flex-direction: column; gap: 4px; max-height: min(320px, 45vh); overflow-y: auto; overscroll-behavior: contain; }
-        /* more files below: the last visible card fades out instead of looking cut off */
-        .file-list.more-below {
-            mask-image: linear-gradient(180deg, #000 calc(100% - 36px), transparent 100%);
-            -webkit-mask-image: linear-gradient(180deg, #000 calc(100% - 36px), transparent 100%);
+        /* a long list keeps a visible thin scrollbar, so it is clear that more files are below */
+        .file-list.scrolls { padding-right: 6px; }
+        .file-list.scrolls::-webkit-scrollbar { width: 6px; }
+        .file-list.scrolls::-webkit-scrollbar-thumb { background: rgba(140, 140, 160, 0.5); border-radius: 3px; }
+        .file-list.scrolls::-webkit-scrollbar-track { background: transparent; }
+        .file-list.scrolls::-webkit-scrollbar-button { display: none; }
+        /* Firefox-based browsers have no ::-webkit-scrollbar (Chromium would let these override the rules above) */
+        @supports not selector(::-webkit-scrollbar) {
+            .file-list.scrolls { scrollbar-width: thin; scrollbar-color: rgba(140, 140, 160, 0.5) transparent; }
         }
         .file-row {
             display: flex; align-items: center; gap: 8px; padding: 9px 12px;
@@ -5405,6 +5427,7 @@
                 '<div class="voice-status"><span class="voice-dot"></span><span class="voice-status-text">Requesting microphone…</span></div>' +
                 '<div class="voice-time">0:00</div>' +
                 '<div class="voice-wave" aria-hidden="true"></div>' +
+                '<div class="voice-mic-row" hidden><span>Microphone</span><select class="voice-mic" aria-label="Microphone"></select></div>' +
                 '<div class="voice-gain" hidden></div>' +
                 '<div class="voice-format"></div>' +
                 '<div class="voice-row voice-row-main"></div>' +
@@ -5416,6 +5439,8 @@
             var waveEl = panel.querySelector('.voice-wave');
             var formatEl = panel.querySelector('.voice-format');
             var gainEl = panel.querySelector('.voice-gain');
+            var micRow = panel.querySelector('.voice-mic-row');
+            var micSel = panel.querySelector('.voice-mic');
             var rowMain = panel.querySelector('.voice-row-main');
             var rowReview = panel.querySelector('.voice-row-review');
             var cancelBtn = panel.querySelector('.voice-cancel');
@@ -5701,6 +5726,7 @@
 
             function closePanel() {
                 closed = true;
+                if (navigator.mediaDevices.removeEventListener) navigator.mediaDevices.removeEventListener('devicechange', onDeviceChange);
                 if (timerInterval) clearInterval(timerInterval);
                 if (autoStop) { clearTimeout(autoStop); autoStop = null; }
                 if (pcm) { pcm.node.disconnect(); pcm = null; }
@@ -5722,6 +5748,7 @@
                 drawBars('idle', 0);
                 waveEl.classList.remove('seekable');
                 setRows([startBtn], []);
+                showMicRow();
                 renderGain();
                 renderFormatPicker();
                 setStatus('Ready when you are');
@@ -5729,6 +5756,7 @@
             }
 
             function showRecordingState() {
+                micRow.hidden = true;
                 setRows([stopBtn], []);
                 formatEl.innerHTML = '';
                 setStatus('Recording…', { recording: true });
@@ -5978,6 +6006,53 @@
             drawBars('idle', 0);
             // the raw microphone like the app by default; the "noise & echo filter" box turns the browser's processing back on
             var cleanup = localStorage.getItem('tvfs_voice_cleanup') === '1';
+            // the chosen microphone ('' = the system default), remembered in this browser; a device that is gone
+            // (unplugged, or ids reset with the site data) quietly falls back to the default
+            var micId = '', micCount = 0, micBusy = false;
+            try { micId = localStorage.getItem('tvfs_voice_mic') || ''; } catch (e) {}
+            function micConstraints(id) {
+                var c = { echoCancellation: cleanup, noiseSuppression: cleanup, autoGainControl: cleanup };
+                if (id) c.deviceId = { exact: id };
+                return c;
+            }
+            function isRecording() { return !!(pcm || (recorder && recorder.state !== 'inactive') || starting); }
+            function showMicRow() { micRow.hidden = micCount < 1 || isRecording() || !!take; }
+            function refreshMics() {
+                if (!navigator.mediaDevices.enumerateDevices) { micCount = 0; showMicRow(); return Promise.resolve([]); }
+                return navigator.mediaDevices.enumerateDevices().then(function(list) {
+                    // "default" / "communications" are Chrome's aliases of real devices: "System default" covers them
+                    var mics = list.filter(function(d) { return d.kind === 'audioinput' && d.deviceId && d.deviceId !== 'default' && d.deviceId !== 'communications'; });
+                    // no labels = no permission yet: nothing to choose from
+                    if (mics.some(function(d) { return !d.label; })) mics = [];
+                    if (closed) return mics;
+                    micSel.innerHTML = '';
+                    [{ deviceId: '', label: 'System default' }].concat(mics).forEach(function(d) {
+                        var o = document.createElement('option');
+                        o.value = d.deviceId;
+                        o.textContent = d.label;
+                        micSel.appendChild(o);
+                    });
+                    micSel.value = mics.some(function(d) { return d.deviceId === micId; }) ? micId : '';
+                    micCount = mics.length;
+                    showMicRow();
+                    return mics;
+                }).catch(function() { micCount = 0; showMicRow(); return []; });
+            }
+            function onDeviceChange() {
+                refreshMics().then(function(mics) {
+                    // the chosen microphone was unplugged: back to the system default (not in the middle of a take)
+                    if (closed || micBusy || !micId || isRecording() || take || !mics.length) return;
+                    if (!mics.some(function(d) { return d.deviceId === micId; })) { micId = ''; stopTracks(); openMic(); }
+                });
+            }
+            if (navigator.mediaDevices.addEventListener) navigator.mediaDevices.addEventListener('devicechange', onDeviceChange);
+            micSel.addEventListener('change', function() {
+                if (isRecording() || take) return;
+                micId = micSel.value;
+                try { if (micId) localStorage.setItem('tvfs_voice_mic', micId); else localStorage.removeItem('tvfs_voice_mic'); } catch (e) {}
+                stopTracks();
+                openMic();
+            });
             function openMic() {
                 setRows([], []);
                 formatEl.innerHTML = '';
@@ -5985,11 +6060,18 @@
                 micSrc = null;
                 analyser = null;
                 pcmModule = null;
-                navigator.mediaDevices.getUserMedia({
-                    audio: { echoCancellation: cleanup, noiseSuppression: cleanup, autoGainControl: cleanup }
+                micBusy = true;
+                micSel.disabled = true;
+                navigator.mediaDevices.getUserMedia({ audio: micConstraints(micId) }).catch(function(err) {
+                    if (!micId || !err || (err.name !== 'OverconstrainedError' && err.name !== 'NotFoundError')) throw err;
+                    micId = '';
+                    return navigator.mediaDevices.getUserMedia({ audio: micConstraints('') });
                 }).then(function(s) {
                     stream = s;
+                    micBusy = false;
+                    micSel.disabled = false;
                     if (closed) { stopTracks(); return; }
+                    refreshMics();
                     try {
                         var AC = window.AudioContext || window.webkitAudioContext;
                         var rate = s.getAudioTracks()[0].getSettings().sampleRate;
@@ -6008,6 +6090,11 @@
                     }
                     showStartState();
                 }).catch(function(err) {
+                    micBusy = false;
+                    micSel.disabled = false;
+                    if (closed) return;
+                    // another microphone may still work (this one busy or failing): the picker stays
+                    refreshMics();
                     setStatus('Microphone access denied or unavailable.', { error: true });
                     showError('Could not access microphone: ' + err.message);
                     setRows([], []);
@@ -6247,15 +6334,14 @@
 
             requestAnimationFrame(function() {
                 setupMarqueeForList(els.fileList.querySelectorAll('.file-row-name'));
-                updateFileListFade();
+                updateFileListScroll();
             });
         }
-        function updateFileListFade() {
+        function updateFileListScroll() {
             var l = els.fileList;
-            l.classList.toggle('more-below', l.scrollTop + l.clientHeight < l.scrollHeight - 2);
+            l.classList.toggle('scrolls', l.scrollHeight > l.clientHeight + 2);
         }
-        els.fileList.addEventListener('scroll', updateFileListFade, { passive: true });
-        window.addEventListener('resize', function() { if (selectedFiles.length) updateFileListFade(); });
+        window.addEventListener('resize', function() { if (selectedFiles.length) updateFileListScroll(); });
 
         function commitRename(input, idx, nameSpan, nameInner, renameBtn) {
             // Guard: if input is already detached (blur fired after click committed), bail

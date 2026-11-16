@@ -39,11 +39,15 @@ catch (err) {
 const http = require('http');
 const { router: moneyGameRoutes, attachSocket } = require('./moneygame/moneyGame');
 
-// near the other route requires
-const { router: twcIdentityRoutes } = require('./twc/identity');
-const { router: twcSocialRoutes } = require('./twc/social');
-const { router: twcSettingsRoutes } = require('./twc/settings');
-const { attachTwcSocket } = require('./twc/socket');
+// TWC chat is switched off unless TWC_ENABLED=1; when off, its modules are not even loaded
+const TWC_ENABLED = process.env.TWC_ENABLED === '1';
+const twc = TWC_ENABLED ? {
+    identity: require('./twc/identity').router,
+    social: require('./twc/social').router,
+    settings: require('./twc/settings').router,
+    attachSocket: require('./twc/socket').attachTwcSocket,
+} : null;
+console.log(`[TWC] chat ${TWC_ENABLED ? 'enabled' : 'disabled (set TWC_ENABLED=1 to enable)'}`);
 
 const app = express();
 app.set('trust proxy', 1);  // <-- taky přidej tady
@@ -72,22 +76,21 @@ app.use('/api/battery', batteryRoutes);
 app.use('/api/moneygame', moneyGameRoutes);
 if (simrailRoutes) app.use('/api/simrail', simrailRoutes);
 
-// alongside the other app.use('/api/...', ...) lines
-app.use('/api/twc', twcIdentityRoutes);
-app.use('/api/twc', twcSocialRoutes);
-app.use('/api/twc/settings', twcSettingsRoutes);
-
-// same pattern as the existing /fonts static mount
-app.use('/chat', express.static('/DATA/files_web/chat'));
+if (twc) {
+    app.use('/api/twc', twc.identity);
+    app.use('/api/twc', twc.social);
+    app.use('/api/twc/settings', twc.settings);
+    app.use('/chat', express.static('/DATA/files_web/chat'));
+}
 
 const server = http.createServer(app);
 attachSocket(server);
 
-// after `const server = http.createServer(app);` and after
-// `attachSocket(server)` (moneyGame's) — order between the two doesn't
-// matter, they're independent Socket.IO servers on different paths
-const { notify: twcNotify } = attachTwcSocket(server);
-app.set('twcNotify', twcNotify);
+// TWC has its own Socket.IO server on a different path than moneyGame's
+if (twc) {
+    const { notify: twcNotify } = twc.attachSocket(server);
+    app.set('twcNotify', twcNotify);
+}
 
 const PORT = 14150;
 server.listen(PORT, '0.0.0.0', () => console.log(`Backend běží na http://0.0.0.0:${PORT}`));

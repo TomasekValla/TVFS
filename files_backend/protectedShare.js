@@ -117,8 +117,12 @@ function checkRateLimit(key, max, windowMs) {
     return entry.count <= max;
 }
 
-const { createRateLimiter } = require('./rateLimiter');
-const authLimiter = createRateLimiter({ perIpMax: 30, windowMs: 15 * 60 * 1000, globalMax: 100, globalLockMax: 100, lockDurationMs: 60 * 60 * 1000 });
+const security = require('./security');
+const limits = require('./limits');
+// Failed Users Only logins per client address and per username. No global lock: a valid
+// session is never blocked, and the silent "am I logged in?" check is not an attempt.
+const loginFailuresByIp = security.failureLimiter({ windowMs: 15 * 60 * 1000, max: 15 });
+const loginFailuresByUser = security.failureLimiter({ windowMs: 15 * 60 * 1000, max: 20 });
 
 // .unref() — this module is also require()'d by cleanup.js's short-lived
 // cron process. Without this, that process would never exit, and cron
@@ -126,24 +130,33 @@ const authLimiter = createRateLimiter({ perIpMax: 30, windowMs: 15 * 60 * 1000, 
 setInterval(() => {
     const now = Date.now();
     for (const [k, e] of attemptWindows) if (now > e.resetAt + 60000) attemptWindows.delete(k);
-    authLimiter.sweep();
 }, 60000).unref();
 
-function clientIp(req) {
-    return req.headers['cf-connecting-ip'] || req.ip || (req.connection && req.connection.remoteAddress) || 'unknown';
-}
+const clientIp = security.clientIp;
 
+// Users Only means real TVFS accounts: the shared tier 0 "host" login (given to strangers)
+// can neither create nor open these shares
 function resolveOwner(req) {
     const auth = uploadRouter.authenticateRequest(req);
-    return auth.valid ? { tier: auth.tier, username: auth.username } : null;
+    return auth.valid && auth.tier >= 1 ? { tier: auth.tier, username: auth.username } : null;
 }
 
-const EXPIRATION_OPTIONS_MIN = [5, 30, 60, 360, 720, 1440, 2880, 4320, 7200, 10080, 14400, 20160];
-const DEFAULT_EXPIRATION_MIN = 10080;
-function resolveExpirationMinutes(raw) {
-    const parsed = parseInt(raw);
-    return EXPIRATION_OPTIONS_MIN.includes(parsed) ? parsed : DEFAULT_EXPIRATION_MIN;
+// Login checked before multer stores anything
+function requireOwner(req, res, next) {
+    const owner = resolveOwner(req);
+    if (!owner) {
+        res.set('Connection', 'close');
+        return res.status(401).json({ error: 'You must be logged in to TVFS to use this mode' });
+    }
+    req.owner = owner;
+    next();
 }
+
+// Share ids are 24 hex characters; chunked upload ids `<ms>_<12 hex>`
+const isShareId = v => typeof v === 'string' && /^[0-9a-f]{24}$/.test(v);
+const isChunkUploadId = v => typeof v === 'string' && /^\d{10,16}_[0-9a-f]{12}$/.test(v);
+const MAX_SHARE_TOTAL = 5 * 1024 * 1024 * 1024; // all files of one share together (owner: never over 5 GB)
+
 
 function generateShareId() { return crypto.randomBytes(12).toString('hex'); }
 
@@ -178,6 +191,7 @@ function detectToolCategory(relativePath, mimeType) {
 }
 
 function getShare(shareId) {
+    if (!isShareId(shareId) || !Object.prototype.hasOwnProperty.call(registry.shares, shareId)) return null;
     const entry = registry.shares[shareId];
     if (!entry) return null;
     if (Date.now() > entry.expiresAt) return null;
@@ -215,7 +229,9 @@ const upload = multer({
 // in one request). Takes fileEntries that already have their final bytes
 // sitting at `path`, on shareDir.
 async function finalizeShare(shareId, shareDir, fileEntries, totalSize, owner, expirationMinutesRaw) {
-    const expiresAt = Date.now() + resolveExpirationMinutes(expirationMinutesRaw) * 60 * 1000;
+    // the same retention rules per tier, size and free space as normal uploads (files are already here: at least a day)
+    const expMinutes = limits.effectiveExpiryMinutes(owner.tier, totalSize, expirationMinutesRaw) || 24 * 60;
+    const expiresAt = Date.now() + expMinutes * 60 * 1000;
 
     const pageFilename = `${shareId}.html`;
     const pagePath = path.join(SHARE_PAGES_DIR, pageFilename);
@@ -273,7 +289,9 @@ async function finalizeShare(shareId, shareDir, fileEntries, totalSize, owner, e
         totalSize,
         uploadedAt: Date.now(),
         expiresAt,
-        ownerUsername: owner.username
+        ownerUsername: owner.username,
+        // file names only after login (shares from before this flag keep the old landing page)
+        metaGated: true
     };
     saveRegistry();
 
@@ -303,6 +321,7 @@ async function finalizeShare(shareId, shareDir, fileEntries, totalSize, owner, e
 // finalizeShare() tail, just assembled from chunks first.
 router.post(
     '/upload',
+    requireOwner,
     upload.fields([{ name: 'files', maxCount: 200 }]),
     async (req, res) => {
         const fileBlobs = (req.files && req.files.files) || [];
@@ -329,6 +348,11 @@ router.post(
         if (relativePaths.length !== fileBlobs.length) {
             cleanupTmp();
             return res.status(400).json({ error: 'relativePaths length must match files length' });
+        }
+
+        if (fileBlobs.reduce((sum, f) => sum + (f.size || 0), 0) > MAX_SHARE_TOTAL) {
+            cleanupTmp();
+            return res.status(413).json({ error: 'A share can hold at most 5GB in total' });
         }
 
         const shareId = generateShareId();
@@ -385,7 +409,7 @@ const CHUNK_TMP_DIR = path.join(PROTECTED_STORAGE_DIR, 'upload_chunks');
 if (!fs.existsSync(CHUNK_TMP_DIR)) fs.mkdirSync(CHUNK_TMP_DIR, { recursive: true });
 
 const CHUNK_SIZE = 25 * 1024 * 1024; // 25MB — matches the size class the frontend already treats as "big" elsewhere in this app
-const MAX_FILE_SIZE = 20 * 1024 * 1024 * 1024; // 20GB/file sanity cap
+const MAX_FILE_SIZE = 5 * 1024 * 1024 * 1024; // 5 GB per file (owner: never over 5 GB)
 
 const chunkUpload = multer({
     storage: multer.diskStorage({
@@ -395,15 +419,20 @@ const chunkUpload = multer({
     limits: { fileSize: CHUNK_SIZE + (5 * 1024 * 1024) } // a little headroom over the nominal chunk size
 });
 
-function chunkManifestPath(uploadId) { return path.join(CHUNK_TMP_DIR, `${uploadId}_manifest.json`); }
+function chunkManifestPath(uploadId) {
+    if (!isChunkUploadId(uploadId)) throw new Error('invalid upload id');
+    return path.join(CHUNK_TMP_DIR, `${uploadId}_manifest.json`);
+}
 function readChunkManifest(uploadId) {
+    if (!isChunkUploadId(uploadId)) return null;
     try { return JSON.parse(fs.readFileSync(chunkManifestPath(uploadId), 'utf8')); } catch { return null; }
 }
 function writeChunkManifest(uploadId, manifest) {
     fs.writeFileSync(chunkManifestPath(uploadId), JSON.stringify(manifest));
 }
 function chunkFilePath(uploadId, fileIndex, chunkIndex) {
-    return path.join(CHUNK_TMP_DIR, `${uploadId}_f${fileIndex}_c${String(chunkIndex).padStart(5, '0')}`);
+    if (!isChunkUploadId(uploadId)) throw new Error('invalid upload id');
+    return path.join(CHUNK_TMP_DIR, `${uploadId}_f${Number(fileIndex)}_c${String(Number(chunkIndex)).padStart(5, '0')}`);
 }
 
 // Simple per-uploadId mutex so two chunk requests for the SAME upload
@@ -429,12 +458,15 @@ router.post('/upload/init', express.urlencoded({ extended: true, limit: INIT_BOD
     try { files = JSON.parse(req.body.files || '[]'); } catch (e) { return res.status(400).json({ error: 'Invalid files list' }); }
     if (!Array.isArray(files) || files.length === 0) return res.status(400).json({ error: 'No files provided' });
     if (files.length > 200) return res.status(400).json({ error: 'Too many files (max 200)' });
+    if (!checkRateLimit('pinit:' + owner.username, 20, 60 * 1000)) return res.status(429).json({ error: 'Too many uploads started, try again in a minute' });
+    const declaredTotal = files.reduce((sum, f) => sum + (parseInt(f && f.size) || 0), 0);
+    if (declaredTotal > MAX_SHARE_TOTAL) return res.status(413).json({ error: 'A share can hold at most 5GB in total' });
 
     for (const f of files) {
         if (!f || typeof f.relativePath !== 'string' || !f.relativePath) return res.status(400).json({ error: 'Every file needs a relativePath' });
         const size = parseInt(f.size);
         if (!Number.isFinite(size) || size < 0) return res.status(400).json({ error: `Invalid size for ${f.relativePath}` });
-        if (size > MAX_FILE_SIZE) return res.status(413).json({ error: `${f.relativePath} is too large (max 20GB per file)` });
+        if (size > MAX_FILE_SIZE) return res.status(413).json({ error: `${f.relativePath} is too large (max 5GB per file)` });
     }
 
     const uploadId = `${Date.now()}_${crypto.randomBytes(6).toString('hex')}`;
@@ -459,7 +491,7 @@ router.post('/upload/init', express.urlencoded({ extended: true, limit: INIT_BOD
 
 // ─── POST /api/protected/upload/chunk ─────────────────────────────────────
 // multipart form: chunk (blob), uploadId, fileIndex, chunkIndex
-router.post('/upload/chunk', chunkUpload.single('chunk'), async (req, res) => {
+router.post('/upload/chunk', requireOwner, chunkUpload.single('chunk'), async (req, res) => {
     const cleanup = () => { if (req.file && fs.existsSync(req.file.path)) try { fs.unlinkSync(req.file.path); } catch (e) {} };
 
     const owner = resolveOwner(req);
@@ -579,8 +611,14 @@ router.post('/upload/complete', async (req, res) => {
 
 // ─── GET /api/protected/:id/meta ─────────────────────────────────────────
 router.get('/:id/meta', (req, res) => {
+    res.set('Cache-Control', 'no-store');
     const entry = getShare(req.params.id);
     if (!entry) return res.status(404).json({ error: 'Not found or expired' });
+    // Names, folders and sizes only for a logged-in TVFS user (shares from before metaGated
+    // keep the old behaviour until they expire: their landing page reads the list before login)
+    if (entry.metaGated && !resolveOwner(req)) {
+        return res.json({ id: entry.id, fileCount: entry.files.length, expiresAt: entry.expiresAt, loginRequired: true });
+    }
     res.json({
         id: entry.id,
         fileCount: entry.files.length,
@@ -619,27 +657,36 @@ router.post('/:id/login', (req, res) => {
     const entry = getShare(req.params.id);
     if (!entry) return res.status(404).json({ error: 'Not found or expired' });
 
-    const ip = clientIp(req);
-    const rl = authLimiter.check(ip);
-    if (!rl.allowed) {
-        requestLogger.logEvent(req, 'protected_login_rate_limited', { shareId: entry.id, limiterState: rl.state });
-        return res.status(429).json({ error: rl.state === 'locked' ? 'Too many failed attempts — locked for 1 hour' : 'Too many attempts, try again later' });
-    }
-
+    // A valid session cookie is checked first and is never rate limited
     const cookieOwner = resolveOwner(req);
     if (cookieOwner) {
-        authLimiter.refund(ip);
-        requestLogger.logEvent(req, 'protected_login_ok', { shareId: entry.id, username: cookieOwner.username, viaCookie: true });
         return res.json({ ok: true, username: cookieOwner.username, isOwner: cookieOwner.username === entry.ownerUsername });
     }
 
+    // The pages' silent "am I logged in?" check sends no credentials: not a login attempt
     const { username, password } = req.body || {};
-    const user = findUser(username, password);
-    if (!user) {
-        requestLogger.logEvent(req, 'protected_login_fail', { shareId: entry.id, attemptedUsernameHash: username ? sha256(String(username).trim()) : null });
+    if (typeof username !== 'string' || typeof password !== 'string' || !username || !password) {
         return res.status(403).json({ error: 'Invalid TVFS credentials' });
     }
-    authLimiter.refund(ip);
+
+    const ipKey = clientIp(req);
+    const userKey = sha256(username.trim().toLowerCase());
+    const wait = Math.max(loginFailuresByIp.retryAfter(ipKey), loginFailuresByUser.retryAfter(userKey));
+    if (wait > 0) {
+        res.set('Retry-After', wait);
+        return res.status(429).json({ error: 'Too many failed attempts, try again later' });
+    }
+
+    const found = findUser(username, password);
+    const user = found && found.tier >= 1 ? found : null; // the host login does not open Users Only shares
+    if (!user) {
+        loginFailuresByIp.fail(ipKey);
+        loginFailuresByUser.fail(userKey);
+        requestLogger.logEvent(req, 'protected_login_fail', { shareId: entry.id });
+        return res.status(403).json({ error: 'Invalid TVFS credentials' });
+    }
+    loginFailuresByIp.reset(ipKey);
+    loginFailuresByUser.reset(userKey);
     requestLogger.logEvent(req, 'protected_login_ok', { shareId: entry.id, username: user.username, viaCookie: false });
     uploadRouter.issueLoginCookie(res, user.tier, user.username, false);
     res.json({ ok: true, username: user.username, isOwner: user.username === entry.ownerUsername });
@@ -656,7 +703,7 @@ router.get('/:id/file/:index', (req, res) => {
     if (!entry) return res.status(404).json({ error: 'Not found or expired' });
 
     const auth = uploadRouter.authenticateRequest(req);
-    if (!auth.valid) {
+    if (!auth.valid || auth.tier < 1) {
         console.log(`🔒 [PROTECTED FILE] 403 — cookie ${req.cookies && req.cookies.tvfs_token ? 'present but invalid/expired' : 'missing'} (share=${entry.id}, index=${req.params.index}, ip=${clientIp(req)})`);
         return res.status(403).json({ error: 'Not logged in — log in as a TVFS user first' });
     }
@@ -673,26 +720,39 @@ router.get('/:id/file/:index', (req, res) => {
     });
 });
 
+// Files, landing page and per-file reader/player pages of one share
+function removeShareFiles(entry) {
+    try { if (entry.dir && fs.existsSync(entry.dir)) fs.rmSync(entry.dir, { recursive: true, force: true }); } catch (e) {}
+    try { if (entry.pagePath && fs.existsSync(entry.pagePath)) fs.unlinkSync(entry.pagePath); } catch (e) {}
+    // entries from before the pairing removal may still have a dashboard page
+    try { if (entry.dashboardPagePath && fs.existsSync(entry.dashboardPagePath)) fs.unlinkSync(entry.dashboardPagePath); } catch (e) {}
+    if (Array.isArray(entry.files)) {
+        for (const f of entry.files) {
+            try { if (f.toolPagePath && fs.existsSync(f.toolPagePath)) fs.unlinkSync(f.toolPagePath); } catch (e) {}
+        }
+    }
+}
+
+// ─── DELETE /api/protected/:id — the owner removes a share before it expires ─
+router.delete('/:id', (req, res) => {
+    const entry = getShare(req.params.id);
+    if (!entry) return res.status(404).json({ error: 'Not found or expired' });
+    const owner = resolveOwner(req);
+    if (!owner) return res.status(401).json({ error: 'Not logged in' });
+    if (owner.username !== entry.ownerUsername) return res.status(403).json({ error: 'Only the owner can delete this share' });
+    removeShareFiles(entry);
+    delete registry.shares[entry.id];
+    saveRegistrySync();
+    requestLogger.logEvent(req, 'protected_share_deleted', { shareId: entry.id, username: owner.username });
+    res.json({ deleted: true });
+});
+
 function sweepExpired() {
     const now = Date.now();
     let removed = 0;
     for (const [id, entry] of Object.entries(registry.shares)) {
         if (entry.expiresAt <= now) {
-            try { if (entry.dir && fs.existsSync(entry.dir)) fs.rmSync(entry.dir, { recursive: true, force: true }); } catch (e) {}
-            try { if (entry.pagePath && fs.existsSync(entry.pagePath)) fs.unlinkSync(entry.pagePath); } catch (e) {}
-            // Old registry entries from before pairing removal may still
-            // have a dashboardPagePath — clean it up too if present, so a
-            // stale pairing dashboard HTML file doesn't linger forever.
-            try { if (entry.dashboardPagePath && fs.existsSync(entry.dashboardPagePath)) fs.unlinkSync(entry.dashboardPagePath); } catch (e) {}
-            // Per-file reader/player tool pages (2026-08 addition) — clean
-            // these up too so they don't linger in files_web forever.
-            // Guarded field access: older registry entries predate this
-            // and simply won't have toolPagePath set on their files.
-            if (Array.isArray(entry.files)) {
-                for (const f of entry.files) {
-                    try { if (f.toolPagePath && fs.existsSync(f.toolPagePath)) fs.unlinkSync(f.toolPagePath); } catch (e) {}
-                }
-            }
+            removeShareFiles(entry);
             delete registry.shares[id];
             removed++;
             requestLogger.logEvent(CRON_PSEUDO_REQ, 'protected_share_expired_deleted', { shareId: id });
@@ -714,6 +774,7 @@ function sweepExpired() {
             let manifest;
             try { manifest = JSON.parse(fs.readFileSync(manifestFilePath, 'utf8')); } catch { manifest = null; }
             if (!manifest || !manifest.createdAt || now - manifest.createdAt < CHUNK_ABANDON_MS) continue;
+            if (!isChunkUploadId(manifest.uploadId)) { try { fs.unlinkSync(manifestFilePath); } catch (e) {} continue; }
 
             for (let fi = 0; fi < (manifest.files || []).length; fi++) {
                 for (let ci = 0; ci < manifest.files[fi].totalChunks; ci++) {

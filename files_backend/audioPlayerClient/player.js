@@ -121,7 +121,14 @@ function updateSeekUI(){
 }
 audio.addEventListener('loadedmetadata', updateSeekUI);
 audio.addEventListener('timeupdate', updateSeekUI);
-audio.addEventListener('play', function(){ btnPlay.innerHTML = CFG.icons.pause; });
+// Statistics: the first play of this page load is reported once (no personal data, just the page)
+var tvfsPlayReported = false;
+function reportPlay(){
+  if (tvfsPlayReported) return;
+  tvfsPlayReported = true;
+  try { fetch('/api/play', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ page: location.pathname }), keepalive: true }).catch(function(){}); } catch (e) {}
+}
+audio.addEventListener('play', function(){ btnPlay.innerHTML = CFG.icons.pause; reportPlay(); });
 audio.addEventListener('pause', function(){ btnPlay.innerHTML = CFG.icons.play; });
 audio.addEventListener('ended', function(){ btnPlay.innerHTML = CFG.icons.play; });
 

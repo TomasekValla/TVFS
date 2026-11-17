@@ -6,12 +6,14 @@ const { sanitizeUsername } = require('./userIdentity');
 
 // ─── Config ───────────────────────────────────────────────────────────────
 
-const FILES_WEB_DIR = process.env.CLEANUP_FILES_WEB_DIR || path.join(__dirname, '../files_web');
-const USERS_DIR = path.join(FILES_WEB_DIR, 'users');
+// Per-user history lives in the data folder, outside the web root (see paths.js)
+const paths = require('./paths');
+paths.migrateFromWebRoot();
+const USERS_DIR = paths.USERS_DIR;
 if (!fs.existsSync(USERS_DIR)) fs.mkdirSync(USERS_DIR, { recursive: true });
 
 const MAX_LOG_ENTRIES = 300;           // how far back a device can "catch up" via diff
-const ENTRY_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000; // mirrors client's 2-week recently-uploaded window
+const ENTRY_MAX_AGE_MS = 31 * 24 * 60 * 60 * 1000; // the longest retention (tier 3: 30 days) plus a day
 
 function userFilePath(username) {
     return path.join(USERS_DIR, `${sanitizeUsername(username)}.json`);
@@ -21,16 +23,28 @@ function userFilePath(username) {
 // long-running upload.js process AND the separate cleanup.js cron script,
 // so we can't rely on in-memory debouncing shared between them) ───────────
 
+// Parsed states cached by file mtime: the status poll of every open tab asks for the version
+const stateCache = new Map(); // path -> { mtimeMs, json }
+
 function loadUserState(username) {
     const p = userFilePath(username);
+    let stat;
+    try { stat = fs.statSync(p); } catch { return { version: 0, files: [], log: [] }; } // no history yet
+    const cached = stateCache.get(p);
+    if (cached && cached.mtimeMs === stat.mtimeMs) return JSON.parse(cached.json);
     try {
         const raw = fs.readFileSync(p, 'utf8');
         const parsed = JSON.parse(raw);
         if (!Array.isArray(parsed.files)) parsed.files = [];
         if (!Array.isArray(parsed.log)) parsed.log = [];
         if (typeof parsed.version !== 'number') parsed.version = 0;
+        stateCache.set(p, { mtimeMs: stat.mtimeMs, json: JSON.stringify(parsed) });
         return parsed;
-    } catch {
+    } catch (err) {
+        // Keep the unreadable file for a look instead of silently starting over on the next write
+        const kept = `${p}.corrupt-${Date.now()}`;
+        try { fs.renameSync(p, kept); } catch (e) {}
+        console.error(`❌ [USER SYNC] Unreadable history for ${username} (${err.message}), kept as ${path.basename(kept)}`);
         return { version: 0, files: [], log: [] };
     }
 }
@@ -39,8 +53,10 @@ function saveUserStateSync(username, state) {
     const p = userFilePath(username);
     const tmp = p + '.tmp';
     try {
-        fs.writeFileSync(tmp, JSON.stringify(state, null, 2));
+        const json = JSON.stringify(state, null, 2);
+        fs.writeFileSync(tmp, json);
         fs.renameSync(tmp, p);
+        stateCache.set(p, { mtimeMs: fs.statSync(p).mtimeMs, json });
     } catch (err) {
         console.error(`❌ [USER SYNC] Failed to save state for ${username}:`, err.message);
     }
@@ -90,7 +106,20 @@ function patchThumbnail(username, fileId, thumbnailUrl) {
     saveUserStateSync(username, state);
 }
 
-// Prune entries older than the 14-day window so the per-user file (and the
+// Changes fields of one entry (e.g. a new expiry) and lets the other devices pick it up
+function patchEntry(username, fileId, fields) {
+    if (!username) return;
+    const state = loadUserState(username);
+    const file = state.files.find(f => f.id === fileId);
+    if (!file) return;
+    Object.assign(file, fields);
+    state.version += 1;
+    state.log.push({ v: state.version, type: 'add', entry: file }); // 'add' = upsert client-side
+    if (state.log.length > MAX_LOG_ENTRIES) state.log = state.log.slice(-MAX_LOG_ENTRIES);
+    saveUserStateSync(username, state);
+}
+
+// Prune entries older than the retention window so the per-user file (and the
 // log) doesn't grow forever. Call this from cleanup.js's periodic run.
 function pruneOldEntries(username) {
     const state = loadUserState(username);
@@ -143,6 +172,7 @@ function getDiffSince(username, sinceVersion) {
 }
 
 module.exports = {
+    patchEntry,
     recordUpload,
     recordRemoval,
     patchThumbnail,

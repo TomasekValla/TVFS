@@ -246,7 +246,14 @@ function tick(){
 }
 
 btnPlay.addEventListener('click', toggle);
-audio.addEventListener('play', function(){ syncButton(); if (!raf) raf = requestAnimationFrame(tick); });
+// Statistics: the first play of this page load is reported once (no personal data, just the page)
+var tvfsPlayReported = false;
+function reportPlay(){
+  if (tvfsPlayReported) return;
+  tvfsPlayReported = true;
+  try { fetch('/api/play', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ page: location.pathname }), keepalive: true }).catch(function(){}); } catch (e) {}
+}
+audio.addEventListener('play', function(){ syncButton(); reportPlay(); if (!raf) raf = requestAnimationFrame(tick); });
 audio.addEventListener('pause', function(){ syncButton(); paint(); });
 audio.addEventListener('timeupdate', paint);
 audio.addEventListener('durationchange', paint);

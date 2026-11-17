@@ -664,6 +664,9 @@
         }
         .expiry-pill:hover { border-color: var(--accent-primary); color: var(--accent-primary); }
         .expiry-pill.selected { border-color: var(--accent-secondary); color: var(--text-main); background: rgba(47,255,196,0.1); }
+        /* longer than the server allows for this account / file size */
+        .expiry-pill.off { opacity: 0.32; cursor: not-allowed; border-style: dashed; }
+        .expiry-pill.off:hover { border-color: var(--border-color, rgba(255,255,255,0.15)); color: inherit; }
         .expiry-date { font-size: 0.68rem; color: var(--text-secondary); opacity: 0.8; }
 
         .resume-banner { flex-direction: column; gap: 8px; margin: 4px 0 18px; }
@@ -1375,6 +1378,8 @@
         .recent-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
         .recent-name { font-size: 0.85rem; font-weight: 700; color: var(--text-main); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         .recent-sub { font-size: 0.7rem; color: var(--text-secondary); display: block; }
+        .recent-stats { font-size: 0.66rem; color: var(--text-secondary); opacity: 0.85; display: block; margin-top: 1px; }
+        #expiredPagesSwitch { flex-wrap: wrap; }
         .recent-badge {
             font-size: 0.62rem; font-weight: 800; letter-spacing: 0.05em; text-transform: uppercase;
             padding: 2px 7px; border-radius: 8px; flex-shrink: 0;
@@ -1772,6 +1777,7 @@
                             <button class="expiry-pill selected" data-minutes="10080">7d</button>
                             <button class="expiry-pill" data-minutes="14400">10d</button>
                             <button class="expiry-pill" data-minutes="20160">14d</button>
+                            <button class="expiry-pill" data-minutes="43200">30d</button>
                         </div>
                     </div>
                     <span class="expiry-date" id="expiryDate"></span>
@@ -1895,7 +1901,7 @@
                 <span class="recent-title">Recently uploaded</span>
             </div>
             <div class="recent-list" id="recentList"></div>
-            <div class="recent-empty" id="recentEmpty" style="display:none;">Nothing uploaded in the last 14 days.</div>
+            <div class="recent-empty" id="recentEmpty" style="display:none;">Nothing uploaded recently.</div>
             <button class="recent-show-more" id="recentShowMoreBtn" style="display:none;">Show more</button>
         </div>
         <div class="glass-card view" id="checkView">
@@ -2081,6 +2087,31 @@
                     </div>
                     <div class="setting-explain">
                         <span class="setting-explain-text" id="appBarStatus"></span>
+                    </div>
+                </div>
+
+                <div class="setting-card" id="expiredPagesCard">
+                    <div class="setting-card-row">
+                        <span class="setting-card-title">Expired pages</span>
+                        <div class="tri-switch" id="expiredPagesSwitch">
+                            <button class="tri-btn" data-val="0" type="button">Off</button>
+                            <button class="tri-btn" data-val="1" type="button">1 mo</button>
+                            <button class="tri-btn active" data-val="3" type="button">3 mo</button>
+                            <button class="tri-btn" data-val="6" type="button">6 mo</button>
+                            <button class="tri-btn" data-val="12" type="button">12 mo</button>
+                        </div>
+                    </div>
+                    <div class="setting-explain">
+                        <span class="setting-explain-text">After a file expires, its link says "This file has expired" (without the name) instead of "not found", for this long. You can remove each one from Recently uploaded.</span>
+                    </div>
+                </div>
+
+                <div class="setting-card" id="globalStatsCard">
+                    <div class="setting-card-row">
+                        <span class="setting-card-title">TVFS in numbers</span>
+                    </div>
+                    <div class="setting-explain">
+                        <span class="setting-explain-text" id="globalStatsText">Loading…</span>
                     </div>
                 </div>
 
@@ -2600,7 +2631,7 @@
             if (state.authenticated) {
                 var ping = state.lastPing !== null ? state.lastPing + ' ms' : '--';
                 var gb   = state.lastUsedGB !== null ? state.lastUsedGB + ' GB' : '--';
-                var tier = 'tier ' + (state.tier || '?');
+                var tier = 'tier ' + (typeof state.tier === 'number' && state.tier >= 0 ? state.tier : '?'); // 0 = host
                 status = 'Online | ' + ping + ' | ' + gb + ' | ' + tier;
             }
             if (opts && opts.uploading) {
@@ -3335,10 +3366,11 @@
             return out;
         }
 
+        // Safe both as element text and inside a quoted attribute (textContent/innerHTML left quotes as they were)
         function escapeHtmlClient(str) {
-            var div = document.createElement('div');
-            div.textContent = str;
-            return div.innerHTML;
+            return String(str == null ? '' : str)
+                .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
         }
 
         // ============================================================
@@ -3865,13 +3897,102 @@
 
         els.expiryPills.addEventListener('click', function(e) {
             var btn = e.target.closest('.expiry-pill');
-            if (!btn) return;
+            if (!btn || btn.classList.contains('off')) return;
             var minutes = parseInt(btn.getAttribute('data-minutes'));
             state.expirationMinutes = minutes;
             els.expiryPills.querySelectorAll('.expiry-pill').forEach(function(p) { p.classList.remove('selected'); });
             btn.classList.add('selected');
             updateExpiryDate();
         });
+
+        // Upload rules of this account from the server (/api/config): the longest expiry depends on
+        // the tier, the file size and the free space; what the server would not allow is greyed out.
+        state.limits = null;
+        function loadServerConfig() {
+            fetch('/api/config', { credentials: 'include', cache: 'no-store' })
+                .then(function(r) { return r.ok ? r.json() : null; })
+                .then(function(cfg) { state.limits = cfg; applyExpiryLimits(); })
+                .catch(function() {});
+        }
+        // Same rule as the server (limits.js); 0 = this file cannot be uploaded now
+        function allowedMinutesFor(size) {
+            var c = state.limits;
+            if (!c) return Infinity;
+            if (size > c.maxFileBytes) return 0;
+            if (c.availableBytes !== null && size > c.availableBytes) return 0;
+            if (c.tier === 0) return Math.max(1, Math.floor((c.untilMidnight - Date.now()) / 60000));
+            var max = c.tierMaxMinutes || 0;
+            if (c.sizeSteps && c.sizeSteps.length) {
+                var step = c.sizeSteps.find(function(s) { return size <= s.upTo; });
+                max = step ? step.maxMinutes : 0;
+                if (c.availableBytes) {
+                    var share = size / c.availableBytes;
+                    var sp = c.spaceSteps.find(function(s) { return share <= s.upTo; });
+                    var byShare = sp ? Math.max(1440, Math.floor(c.tierMaxMinutes * sp.factor)) : 1440;
+                    max = Math.min(max, byShare);
+                }
+            }
+            return max;
+        }
+        function fmtMinutes(m) {
+            if (m >= 1440) { var d = Math.round(m / 144) / 10; return d + (d === 1 ? ' day' : ' days'); }
+            if (m >= 60) return Math.round(m / 6) / 10 + ' h';
+            return m + ' min';
+        }
+        function applyExpiryLimits() {
+            if (!state.limits) return;
+            var biggest = 0;
+            selectedFiles.forEach(function(e) { if (e.file && e.file.size > biggest) biggest = e.file.size; });
+            var allowed = allowedMinutesFor(biggest);
+            var why = state.limits.tier === 0 ? 'Host uploads are deleted at midnight'
+                : biggest > 0 ? 'At most ' + fmtMinutes(allowed) + ' for a file this big right now'
+                : 'At most ' + fmtMinutes(allowed) + ' for your account';
+            var pills = els.expiryPills.querySelectorAll('.expiry-pill');
+            var best = null;
+            // Options above what this tier can EVER get are not shown at all (host: under a day, tier 1: 7 days,
+            // tier 2: 14 days); options blocked only for now (file size, free space) stay visible but greyed.
+            var ceiling = state.limits.tier === 0 ? 1439 : (state.limits.tierMaxMinutes || Infinity);
+            pills.forEach(function(p) {
+                var m = parseInt(p.getAttribute('data-minutes'));
+                var never = m > ceiling;
+                p.style.display = never ? 'none' : '';
+                var off = never || m > allowed;
+                p.classList.toggle('off', off);
+                p.title = off ? why : '';
+                p.setAttribute('aria-disabled', off ? 'true' : 'false');
+                if (!off) best = p;
+            });
+            var sel = els.expiryPills.querySelector('.expiry-pill.selected');
+            if (sel && sel.classList.contains('off') && best) {
+                sel.classList.remove('selected');
+                best.classList.add('selected');
+                state.expirationMinutes = parseInt(best.getAttribute('data-minutes'));
+            }
+            updateExpiryDate();
+        }
+
+        // Hides what the current login can never use (instead of showing it greyed out):
+        // account-only features for logged-out visitors and the host, styled links for the host.
+        function applyTierVisibility() {
+            var tier = state.authenticated ? state.tier : -1;
+            var account = tier >= 1, host = tier === 0;
+            var show = function(el, on) { if (el) el.style.display = on ? '' : 'none'; };
+            document.querySelectorAll('a.info-card[href="#check"]').forEach(function(a) { show(a, account); });
+            if (!account && typeof currentView !== 'undefined' && currentView === 'check') location.hash = '';
+            ['globalStatsCard', 'expiredPagesCard', 'settingsSyncCard'].forEach(function(id) { show(document.getElementById(id), account); });
+            // the host gets plain links only, so "Styled" would do the same as "Normal"
+            var styledBtn = els.autoCopyTriSwitch && els.autoCopyTriSwitch.querySelector('[data-mode="styled"]');
+            show(styledBtn, !host);
+            show(document.getElementById('autoCopyImageRow'), !host);
+            var imgExplain = document.getElementById('autoCopyImageExplainText');
+            if (imgExplain && imgExplain.parentNode) show(imgExplain.parentNode, !host);
+            applyAutoCopyTriSwitch();
+            if (host && state.autoCopyMode === 'styled') {
+                var normalBtn = els.autoCopyTriSwitch.querySelector('[data-mode="normal"]');
+                if (normalBtn) normalBtn.classList.add('active'); // shown only; the saved choice stays for real accounts
+            }
+            if (state.limits) applyExpiryLimits();
+        }
 
         // ============================================================
         // CHUNK CONFIGURATION CARD
@@ -4030,6 +4151,21 @@
             });
         }
         applyAutoCopyTriSwitch(); // reflect value restored from localStorage on load
+        applyTierVisibility(); // logged out until the login check says otherwise
+
+        // Time moves on while the page stays open: the "Files expire on" date and the options that are greyed
+        // only for now (the host's time to midnight) are recomputed every 20 s and when the tab comes back.
+        // The server computes the real expiry itself at upload time, so this only keeps the page honest.
+        function refreshExpiryClock() {
+            if (document.hidden) return;
+            if (state.limits && state.limits.tier === 0 && state.limits.untilMidnight && Date.now() >= state.limits.untilMidnight) {
+                loadServerConfig(); // a new day for the host: fresh limits (or the login has ended)
+                return;
+            }
+            if (state.limits) applyExpiryLimits(); else updateExpiryDate();
+        }
+        setInterval(refreshExpiryClock, 20000);
+        document.addEventListener('visibilitychange', refreshExpiryClock);
 
         els.autoCopyTriSwitch.addEventListener('click', function(e) {
             var btn = e.target.closest('.tri-btn');
@@ -4125,12 +4261,16 @@
         }
 
         function showAuthenticatedUI() {
+            applyTierVisibility();
             els.authSection.innerHTML = '';
             var statusDiv = document.createElement('div');
             statusDiv.className = 'auth-status';
             var statusText = document.createElement('span');
             statusText.className = 'auth-status-text';
-            statusText.textContent = '✅ Authenticated (Tier ' + state.tier + ')';
+            statusText.textContent = state.tier === 0 ? '✅ Host (until midnight)'
+                : '✅ Authenticated (Tier ' + state.tier + (state.tier === 3 ? ', admin' : '') + ')';
+            loadServerConfig();
+            loadServerSettings();
             var logoutBtn = document.createElement('button');
             logoutBtn.className = 'auth-logout-btn';
             logoutBtn.id = 'logoutBtn';
@@ -4155,6 +4295,9 @@
         }
 
         function showPasswordUI() {
+            applyTierVisibility();
+            var statsCard = document.getElementById('globalStatsCard'); // tier 1+ only
+            if (statsCard) statsCard.style.display = 'none';
             els.authSection.innerHTML = '';
 
             var userInput = document.createElement('input');
@@ -4219,7 +4362,7 @@
             .then(function(r) { return r.json(); })
             .then(function(d) {
                 state.tier = d.tier || 0;
-                if (d.valid && d.tier > 0) {
+                if (d.valid && typeof d.tier === "number" && d.tier >= 0) { // tier 0 = the host login
                     // Username itself isn't sensitive on its own (the password
                     // and session token still gate everything) — keep it around
                     // in localStorage, including after logout, so returning
@@ -4377,7 +4520,94 @@
 
         // "Delete" on a FINISHED upload — asks the server to delete it from
         // disk right now instead of waiting for its expiresAt.
+// Opens/plays of own files (GET /api/stats), refreshed at most once a minute while the page is visible
+        var fileStats = {}, fileStatsAt = 0;
+        function refreshFileStats() {
+            if (!state.authenticated || state.tier === 0 || document.hidden || Date.now() - fileStatsAt < 60000) return;
+            fileStatsAt = Date.now();
+            fetch('/api/stats', { credentials: 'include', cache: 'no-store' })
+                .then(function(r) { return r.ok ? r.json() : null; })
+                .then(function(d) {
+                    if (!d) return;
+                    var changed = JSON.stringify(d.files) !== JSON.stringify(fileStats);
+                    fileStats = d.files || {};
+                    state.globalStats = d.global || null;
+                    if (changed) renderRecentSection();
+                    if (typeof renderGlobalStats === 'function') renderGlobalStats();
+                }).catch(function() {});
+        }
+
+// Settings stored on the server (only for real accounts, not the host login)
+        function loadServerSettings() {
+            var card = document.getElementById('expiredPagesCard');
+            if (!card) return;
+            card.style.display = state.tier > 0 ? '' : 'none';
+            var statsCard = document.getElementById('globalStatsCard'); // the server gives the numbers to tier 1+ only
+            if (statsCard) statsCard.style.display = state.tier > 0 ? '' : 'none';
+            if (state.tier <= 0) return;
+            fetch('/api/settings', { credentials: 'include', cache: 'no-store' })
+                .then(function(r) { return r.ok ? r.json() : null; })
+                .then(function(d) { if (d) markExpiredPagesChoice(d.expiredPageMonths); })
+                .catch(function() {});
+        }
+        function markExpiredPagesChoice(months) {
+            document.querySelectorAll('#expiredPagesSwitch .tri-btn').forEach(function(b) {
+                b.classList.toggle('active', parseInt(b.getAttribute('data-val')) === months);
+            });
+        }
+        (function() {
+            var sw = document.getElementById('expiredPagesSwitch');
+            if (!sw) return;
+            sw.addEventListener('click', function(e) {
+                var b = e.target.closest('.tri-btn');
+                if (!b) return;
+                var months = parseInt(b.getAttribute('data-val'));
+                markExpiredPagesChoice(months);
+                fetch('/api/settings', { method: 'PUT', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ expiredPageMonths: months }) })
+                    .catch(function() {});
+            });
+        })();
+        function renderGlobalStats() {
+            var el = document.getElementById('globalStatsText');
+            var card = document.getElementById('globalStatsCard');
+            if (card) card.style.display = state.tier > 0 ? '' : 'none';
+            var g = state.globalStats;
+            if (!el || !g) return;
+            var since = new Date(g.since).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
+            el.textContent = g.uploads.toLocaleString('en-US') + ' uploads (' + fmtBytes(g.uploadedBytes) + '), ' +
+                g.opens.toLocaleString('en-US') + ' opens and ' + g.plays.toLocaleString('en-US') + ' plays since ' + since + '.';
+        }
+
+        // "Keep for the maximum length": the server extends the file as far as the rules allow
+        function keepForMax(item, btn) {
+            btn.disabled = true;
+            fetch('/api/file/' + encodeURIComponent(item.id) + '/keep-max', { method: 'POST', credentials: 'include' })
+                .then(function(r) { return r.ok ? r.json() : null; })
+                .then(function(d) {
+                    if (!d || !d.expiresAt) { btn.disabled = false; return; }
+                    saveRecentUploads(loadRecentUploads().map(function(e) { if (e.id === item.id) e.expiresAt = d.expiresAt; return e; }));
+                    renderRecentSection();
+                }).catch(function() { btn.disabled = false; });
+        }
+
         function deleteFinishedUpload(item, shiftKey) {
+            var gone = item.expired || (item.expiresAt && item.expiresAt <= Date.now());
+            if (gone) {
+                // the file itself is already gone: this removes its "expired" (410) page and the list item
+                askToDelete({
+                    title: '🗑️ Remove the expired page?',
+                    text: 'The link will no longer say the file expired; it will simply not exist.',
+                    shiftKey: shiftKey
+                }, function() {
+                    fetch('/api/expired/' + encodeURIComponent(item.id), { method: 'DELETE', credentials: 'include' })
+                        .catch(function() {})
+                        .finally(function() {
+                            saveRecentUploads(loadRecentUploads().filter(function(e) { return e.id !== item.id; }));
+                            renderRecentSection();
+                        });
+                });
+                return;
+            }
             askToDelete({
                 title: '🗑️ Delete this file?',
                 text: '"' + (item.name || 'this file') + '" will be permanently deleted from the server right now.',
@@ -4423,7 +4653,7 @@
         // no server-side history/auth binding needed)
         // ============================================================
         var RECENT_STORAGE_KEY = 'tvfs_recent_uploads';
-        var RECENT_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000; // files can't outlive 2 weeks anyway
+        var RECENT_MAX_AGE_MS = 31 * 24 * 60 * 60 * 1000; // tier 3 keeps files up to 30 days
         var RECENT_COLLAPSED_COUNT = 3;
         var recentExpanded = false;
         var recentTickTimer = null;
@@ -4550,7 +4780,7 @@
 
         function ensureVideoThumb(link, thumbEl) {
             if (videoThumbCache[link]) {
-                thumbEl.innerHTML = '<img src="' + videoThumbCache[link] + '" style="width:100%;height:100%;object-fit:cover;" alt="">';
+                thumbEl.innerHTML = '<img src="' + escapeHtmlClient(videoThumbCache[link]) + '" style="width:100%;height:100%;object-fit:cover;" alt="">';
                 return;
             }
             if (videoThumbCache[link] === null) return; // extraction already in flight or failed
@@ -4685,7 +4915,7 @@
                 return row;
             }
 
-            var expired = item.expiresAt && item.expiresAt <= now;
+            var expired = item.expired || (item.expiresAt && item.expiresAt <= now);
             row.className = 'recent-item' + (expired ? ' expired' : '');
 
             var thumb = document.createElement('div');
@@ -4693,15 +4923,15 @@
             if (!expired && item.thumbnail) {
                 // Server-generated AVIF/WebP still — same for every device,
                 // no client-side <video> seeking/canvas hack needed anymore.
-                thumb.innerHTML = '<img src="' + item.thumbnail + '" loading="lazy" style="width:100%;height:100%;object-fit:cover;" alt="">';
+                thumb.innerHTML = '<img src="' + escapeHtmlClient(item.thumbnail) + '" loading="lazy" style="width:100%;height:100%;object-fit:cover;" alt="">';
             } else if (!expired && item.category === 'image' && item.link) {
-                thumb.innerHTML = '<img src="' + item.link + '" loading="lazy" style="width:100%;height:100%;object-fit:cover;" alt="">';
+                thumb.innerHTML = '<img src="' + escapeHtmlClient(item.link) + '" loading="lazy" style="width:100%;height:100%;object-fit:cover;" alt="">';
             } else if (!expired && item.category === 'video' && item.link) {
                 // Fallback for the brief window before the server-side thumbnail
                 // is ready (ffmpeg runs async right after upload completes).
                 thumb.setAttribute('data-video-link', item.link);
                 if (videoThumbCache[item.link]) {
-                    thumb.innerHTML = '<img src="' + videoThumbCache[item.link] + '" style="width:100%;height:100%;object-fit:cover;" alt="">';
+                    thumb.innerHTML = '<img src="' + escapeHtmlClient(videoThumbCache[item.link]) + '" style="width:100%;height:100%;object-fit:cover;" alt="">';
                 } else {
                     thumb.innerHTML = recentIconSvg('video');
                     ensureVideoThumb(item.link, thumb);
@@ -4718,13 +4948,17 @@
                 escapeHtmlClient(truncateFilename(item.name || '')) + '</span>';
             var subSpan = '<span class="recent-sub" data-expires-at="' + (item.expiresAt || 0) + '">' +
                 (expired ? 'Expired' : (fmtCountdown(item.expiresAt - now) ? 'Will expire in <span class="cd-val">' + fmtCountdown(item.expiresAt - now) + '</span>' : 'Expired')) + '</span>';
-            info.innerHTML = nameSpan + subSpan;
+            var st = fileStats[item.id];
+            var statSpan = st && (st.opens || st.plays)
+                ? '<span class="recent-stats" title="Opened / played (each address once per hour)">👁 ' + (st.opens || 0) + (st.plays ? ' · ▶ ' + st.plays : '') + '</span>' : '';
+            info.innerHTML = nameSpan + subSpan + statSpan;
             row.appendChild(info);
 
             if (expired) {
                 var badge = document.createElement('span');
                 badge.className = 'recent-badge expired-badge';
-                badge.textContent = 'EXPIRED';
+                badge.textContent = item.removedEarly ? 'REMOVED EARLY' : 'EXPIRED';
+                if (item.removedEarly) badge.title = 'The server ran out of space, so this file was removed before its time';
                 row.appendChild(badge);
             }
 
@@ -4749,11 +4983,24 @@
             });
             actions.appendChild(copyStyledBtn);
 
+            // Keep max: only when the rules allow more than the file has now
+            if (!expired && state.tier > 0 && item.uploadedAt && item.size !== undefined) {
+                var maxMin = allowedMinutesFor(item.size || 0);
+                if (isFinite(maxMin) && item.uploadedAt + maxMin * 60000 > item.expiresAt + 60000) {
+                    var keepBtn = document.createElement('button');
+                    keepBtn.className = 'recent-copy-btn';
+                    keepBtn.title = 'Keep for the maximum length (' + fmtMinutes(maxMin) + ' from the upload)';
+                    keepBtn.textContent = '⏳';
+                    keepBtn.addEventListener('click', function() { keepForMax(item, keepBtn); });
+                    actions.appendChild(keepBtn);
+                }
+            }
+
             row.appendChild(actions);
 
             var deleteBtn = document.createElement('button');
             deleteBtn.className = 'recent-copy-btn recent-delete-btn';
-            deleteBtn.title = 'Delete now';
+            deleteBtn.title = expired ? 'Remove the expired page' : 'Delete now';
             deleteBtn.textContent = '🗑️';
             deleteBtn.addEventListener('click', function(e) { deleteFinishedUpload(item, e.shiftKey); });
             actions.appendChild(deleteBtn);
@@ -4762,6 +5009,7 @@
         }
 
         function renderRecentSection() {
+            refreshFileStats();
             var listEl = document.getElementById('recentList');
             var emptyEl = document.getElementById('recentEmpty');
             var moreBtn = document.getElementById('recentShowMoreBtn');
@@ -6137,6 +6385,7 @@
         // FILE LIST RENDERING
         // ============================================================
         function renderFileList() {
+            setTimeout(applyExpiryLimits, 0);
             els.errorDisplay.style.display = 'none';
             if (selectedFiles.length === 0) {
                 els.fileListSection.classList.remove('visible');
@@ -6833,7 +7082,7 @@
                 formData.append('file', file);
                 if (password) formData.append('password', password);
                 formData.append('anonymize', 'false'); // handled client-side via File rename
-                formData.append('removeTimestamp', state.tier === 2 ? 'true' : 'false');
+                formData.append('removeTimestamp', state.tier >= 2 ? 'true' : 'false');
                 formData.append('expirationMinutes', expirationMinutes);
                 if (batchId) formData.append('batchId', batchId);
                 if (isVoiceNote(file)) formData.append('voiceNote', '1');
@@ -7588,7 +7837,7 @@
             var completeBody = {
                 uploadId: uploadId,
                 anonymize: false,
-                removeTimestamp: state.tier === 2,
+                removeTimestamp: state.tier >= 2,
                 expirationMinutes: expirationMinutes
             };
             if (password) completeBody.password = password;

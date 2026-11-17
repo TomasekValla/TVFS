@@ -101,6 +101,13 @@
 
     let meta = null;
 
+    // Names and sizes come only with a valid session, so the list is fetched again after login
+    async function loadFullMeta() {
+        const res = await fetch(`${API}/${shareId}/meta`, { credentials: 'include' });
+        if (res.ok) { const m = await res.json(); if (Array.isArray(m.files)) meta = m; }
+        return Array.isArray(meta && meta.files);
+    }
+
     async function boot() {
         try {
             const res = await fetch(`${API}/${shareId}/meta`);
@@ -121,7 +128,7 @@
             const res = await fetch(`${API}/${shareId}/login`, {
                 method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify({})
             });
-            if (res.ok) {
+            if (res.ok && await loadFullMeta()) {
                 renderFileList();
                 hide('shell');
                 show('fileListCard');
@@ -145,6 +152,7 @@
             });
             const data = await res.json();
             if (!res.ok) { setMsg('gateMsg', data.error || 'Login failed', 'error'); el('gateLoginBtn').disabled = false; return; }
+            if (!await loadFullMeta()) { setMsg('gateMsg', 'Logged in, but the file list could not be loaded. Reload the page.', 'error'); el('gateLoginBtn').disabled = false; return; }
             renderFileList();
             hide('shell');
             show('fileListCard');

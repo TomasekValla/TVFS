@@ -4,20 +4,27 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const os = require('os');
-const { execFile } = require('child_process');
 let archiver = require('archiver');
 if (archiver.default) {
     archiver = archiver.default;
 }
 const router = express.Router();
 
-const { findUser } = require('./userIdentity');
+const { findUser, currentUser, nextPragueMidnight, HOST_USERNAME } = require('./userIdentity');
 const userSync = require('./userSync');
 const thumbnails = require('./thumbnails');
 const requestLogger = require('./requestLogger');
 const audioPlayerLib = require('./audioPlayer');
 const safeFs = require('./safeFs');
 const appOffer = require('./appOffer');
+const security = require('./security');
+const mediaQueue = require('./mediaQueue');
+const limits = require('./limits');
+const expiredPages = require('./expiredPages');
+const userSettings = require('./userSettings');
+const stats = require('./stats');
+const paths = require('./paths');
+paths.migrateFromWebRoot();
 
 // ─── Session Store ───────────────────────────────────────────────────────────
 //
@@ -28,7 +35,9 @@ const appOffer = require('./appOffer');
 //   • Sessions can be invalidated server-side (logout, expiry).
 //   • No credential material ever touches logs or network after /api/auth.
 
-const sessions = new Map(); // token → { tier, username, expiresAt, remember }
+// Keyed by sha256(token): a copy of sessions.json is not a set of working logins.
+const sessions = new Map(); // sha256(token) → { tier, username, expiresAt, remember, fp }
+const tokenKey = token => crypto.createHash('sha256').update(String(token)).digest('hex');
 
 // ─── Session persistence ─────────────────────────────────────────────────
 //
@@ -55,12 +64,15 @@ function loadSessions() {
         const raw = JSON.parse(fs.readFileSync(SESSIONS_PATH, 'utf8'));
         const now = Date.now();
         let loaded = 0, skippedExpired = 0;
-        for (const [token, session] of Object.entries(raw || {})) {
+        // v2 = keys are already token hashes; the older file kept raw tokens, which are hashed once here
+        const hashed = raw && raw.v === 2;
+        for (const [key, session] of Object.entries(hashed ? raw.sessions || {} : raw || {})) {
             if (!session || typeof session.expiresAt !== 'number') continue;
             if (session.expiresAt <= now) { skippedExpired++; continue; }
-            sessions.set(token, session);
+            sessions.set(hashed ? key : tokenKey(key), session);
             loaded++;
         }
+        if (!hashed && loaded) saveSessions();
         console.log(`🔐 Sessions restored: ${loaded} active${skippedExpired ? `, ${skippedExpired} already expired` : ''}`);
     } catch {
         console.log('🔐 Sessions store initialized (empty or not found)');
@@ -70,7 +82,7 @@ function loadSessions() {
 function _writeSessionsAtomic() {
     try {
         fs.mkdirSync(SESSIONS_DIR, { recursive: true });
-        fs.writeFileSync(SESSIONS_TMP, JSON.stringify(Object.fromEntries(sessions)));
+        fs.writeFileSync(SESSIONS_TMP, JSON.stringify({ v: 2, sessions: Object.fromEntries(sessions) }));
         fs.renameSync(SESSIONS_TMP, SESSIONS_PATH);
     } catch (err) {
         console.error('❌ Failed to save sessions:', err.message);
@@ -105,10 +117,16 @@ setInterval(() => {
 const SESSION_REMEMBER_MS = 365 * 24 * 60 * 60 * 1000; // 1 year
 const SESSION_SINGLE_MS   = 24 * 60 * 60 * 1000;        // 24 hours
 
+// The shared tier 0 "host" login always ends at the next midnight (Prague), whatever was chosen
+function sessionEnd(tier, remember) {
+    if (tier === 0) return nextPragueMidnight();
+    return Date.now() + (remember ? SESSION_REMEMBER_MS : SESSION_SINGLE_MS);
+}
+
 function createSession(tier, username, remember) {
     const token = crypto.randomBytes(32).toString('hex');
-    const durationMs = remember ? SESSION_REMEMBER_MS : SESSION_SINGLE_MS;
-    sessions.set(token, { tier, username, expiresAt: Date.now() + durationMs, remember: !!remember });
+    const user = currentUser(username);
+    sessions.set(tokenKey(token), { tier, username, expiresAt: sessionEnd(tier, remember), remember: !!remember && tier > 0, fp: user ? user.fingerprint : null });
     saveSessions();
     return token;
 }
@@ -122,57 +140,104 @@ function createSession(tier, username, remember) {
 function issueLoginCookie(res, tier, username, remember) {
     const sessionToken = createSession(tier, username, remember);
     const baseOpts = { httpOnly: true, path: '/', sameSite: 'lax', secure: true };
-    if (remember) baseOpts.maxAge = SESSION_REMEMBER_MS; // persistent
+    if (tier === 0) baseOpts.expires = new Date(nextPragueMidnight()); // host: until midnight
+    else if (remember) baseOpts.maxAge = SESSION_REMEMBER_MS; // persistent
     // else: no maxAge/expires set at all → true browser-session cookie
     res.cookie('tvfs_token', sessionToken, baseOpts);
     res.cookie('tvfs_tier', String(tier), { ...baseOpts, httpOnly: false });
     return sessionToken;
 }
 
+// A session lives only while its user is still in .env with the same credentials; the tier
+// always comes from the current list (a demoted user loses rights at once).
 function getSession(token) {
-    if (!token) return null;
-    const session = sessions.get(token);
+    if (!token || typeof token !== 'string') return null;
+    const key = tokenKey(token);
+    const session = sessions.get(key);
     if (!session) return null;
-    if (Date.now() > session.expiresAt) {
-        sessions.delete(token);
+    const user = currentUser(session.username);
+    if (Date.now() > session.expiresAt || !user || (session.fp && session.fp !== user.fingerprint)) {
+        sessions.delete(key);
         saveSessions();
         return null;
     }
+    if (!session.fp) { session.fp = user.fingerprint; saveSessions(); } // sessions from before fingerprints
+    if (session.tier !== user.tier) { session.tier = user.tier; saveSessions(); }
     return session;
 }
 
 function deleteSession(token) {
-    if (sessions.delete(token)) saveSessions();
+    if (sessions.delete(tokenKey(token))) saveSessions();
+}
+
+// Every session of one user (log out on all devices)
+function deleteUserSessions(username) {
+    let n = 0;
+    for (const [key, s] of sessions) if (s.username === username) { sessions.delete(key); n++; }
+    if (n) saveSessions();
+    return n;
 }
 
 // ─── Cookie Auth Helper ──────────────────────────────────────────────────────
 
+// Session cookie only. Credentials in a request body are accepted solely by the
+// login routes (/auth, /verify-password and the Users Only login), which are rate limited.
 function authenticateRequest(req) {
-    // 1. Try session cookie (preferred — no credential in request body)
     const token = req.cookies && req.cookies.tvfs_token;
     if (token) {
         const session = getSession(token);
-        if (session) return { valid: true, tier: session.tier, username: session.username, ownerKey: `user:${session.username}` };
+        if (session) {
+            // Strangers share the host login: each host session owns only its own uploads
+            const ownerKey = session.tier === 0 ? `host:${tokenKey(token).slice(0, 16)}` : `user:${session.username}`;
+            return { valid: true, tier: session.tier, username: session.username, ownerKey, isHost: session.tier === 0 };
+        }
     }
-
-    // 2. Fall back to username+password in body (for requests that don't yet have a cookie)
-    const password = req.body && req.body.password;
-    const username = req.body && req.body.username;
-    if (password && username) {
-        const user = findUser(username, password);
-        if (user) return { valid: true, tier: user.tier, username: user.username, ownerKey: `user:${user.username}` };
-    }
-
-    return { valid: false, tier: 0, username: null, ownerKey: null };
+    return { valid: false, tier: -1, username: null, ownerKey: null };
 }
 
-// ─── Rate Limiting (in-memory, per IP) ───────────────────────────────────────
+// Rejects before any body is read (multer would otherwise write the whole upload to disk first)
+function requireSession(req, res, next) {
+    const auth = authenticateRequest(req);
+    if (!auth.valid) {
+        res.set('Connection', 'close');
+        return res.status(403).json({ error: 'Not logged in' });
+    }
+    req.auth = auth;
+    mediaQueue.enterPriority(limits.MEDIA_PRIORITY[auth.tier] || 0);
+    next();
+}
+
+// Failed logins per client address and per username; a success clears both.
+const loginFailuresByIp = security.failureLimiter({ windowMs: 15 * 60 * 1000, max: 10 });
+const loginFailuresByUser = security.failureLimiter({ windowMs: 15 * 60 * 1000, max: 20 });
+
+function checkLogin(req, res, username, password) {
+    const ipKey = security.clientIp(req);
+    const userKey = security.sha256(String(username).trim().toLowerCase());
+    const wait = Math.max(loginFailuresByIp.retryAfter(ipKey), loginFailuresByUser.retryAfter(userKey));
+    if (wait > 0) {
+        res.set('Retry-After', wait);
+        res.status(429).json({ valid: false, error: 'Too many failed attempts, try again later' });
+        return { blocked: true, user: null };
+    }
+    const user = findUser(username, password);
+    if (user) {
+        loginFailuresByIp.reset(ipKey);
+        loginFailuresByUser.reset(userKey);
+    } else {
+        loginFailuresByIp.fail(ipKey);
+        loginFailuresByUser.fail(userKey);
+    }
+    return { blocked: false, user };
+}
+
+// ─── Rate Limiting (in-memory, per client address) ───────────────────────────
 
 const rateLimits = new Map();
 
 function rateLimit({ windowMs = 1000, max = 10, keyPrefix = '' } = {}) {
     return (req, res, next) => {
-        const ip = req.ip || req.connection.remoteAddress;
+        const ip = security.clientIp(req);
         const key = keyPrefix + ip;
         const now = Date.now();
         const entry = rateLimits.get(key) || { count: 0, resetTime: now + windowMs };
@@ -201,33 +266,11 @@ setInterval(() => {
     }
 }, 30000).unref();
 
-// ─── Expiration Resolution ───────────────────────────────────────────────────
-//
-// Allowed retention windows, in minutes. Kept as a whitelist (not a min/max
-// clamp) because we now support sub-day granularity (5m, 30m, ...) alongside
-// multi-day — a simple clamp would let arbitrary in-between values through.
-// Anything not in this list falls back to the default (7 days).
-
-const EXPIRATION_OPTIONS_MIN = [
-    5, 30, 60, 360, 720,                 // 5m, 30m, 1h, 6h, 12h
-    1440, 2880, 4320, 7200, 10080,       // 1d, 2d, 3d, 5d, 7d
-    14400, 20160                         // 10d, 14d
-];
-const DEFAULT_EXPIRATION_MIN = 10080; // 7 days
-
-function resolveExpirationMinutes(rawValue) {
-    const parsed = parseInt(rawValue);
-    if (EXPIRATION_OPTIONS_MIN.includes(parsed)) return parsed;
-    return DEFAULT_EXPIRATION_MIN;
-}
-
-function computeExpiresAt(rawValue) {
-    return Date.now() + resolveExpirationMinutes(rawValue) * 60 * 1000;
-}
+// Expiry rules per tier: see limits.js
 
 // ─── Directories ─────────────────────────────────────────────────────────────
 
-const baseDir = path.join(__dirname, '../files_web/files');
+const baseDir = paths.FILES_DIR;
 const dirs = {
     pictures: path.join(baseDir, 'pictures'),
     videos: path.join(baseDir, 'videos'),
@@ -236,7 +279,9 @@ const dirs = {
     batch: path.join(baseDir, 'batch'),
     text: path.join(baseDir, 'text'),
     players: path.join(baseDir, 'players'),
-    chunks: path.join(__dirname, 'temp_chunks')
+    chunks: path.join(__dirname, 'temp_chunks'),
+    // single-request uploads land here (not web-served) until login and type are checked
+    incoming: path.join(__dirname, 'temp_chunks', 'incoming')
 };
 
 Object.values(dirs).forEach(dir => {
@@ -248,7 +293,8 @@ Object.values(dirs).forEach(dir => {
 // Atomic write: data goes to a temp file first, then renamed into place.
 // This prevents corruption if the process crashes mid-write.
 
-const REGISTRY_PATH = path.join(__dirname, '../files_web/file_registry.json');
+// In the data folder, outside the web root (see paths.js)
+const REGISTRY_PATH = paths.REGISTRY_PATH;
 const REGISTRY_TMP  = REGISTRY_PATH + '.tmp';
 
 let registry = { files: [], batches: [] };
@@ -294,6 +340,62 @@ function isPathReferenced(filePath, exceptEntry = null) {
 // Load registry on startup
 loadRegistry();
 
+// Heartbeat: while it is fresh the cron cleanup stays idle, because this process runs the
+// cleanup itself on its in-memory registry (one writer, see cleanup.js startInProcess)
+function touchHeartbeat() {
+    try { fs.writeFileSync(paths.HEARTBEAT_PATH, String(process.pid)); } catch (e) {}
+}
+
+// Read and write access to the live registry for the in-process cleanup
+// ─── Expiry, 410 pages and the emergency eviction (called by the in-process cleanup) ───
+
+const ownerUsername = file => (file.ownerKey && file.ownerKey.startsWith('user:') ? file.ownerKey.slice(5) : null);
+
+function tierOf(file) {
+    if (typeof file.ownerTier === 'number') return file.ownerTier;
+    if (file.ownerKey && file.ownerKey.startsWith('host:')) return 0;
+    const u = ownerUsername(file) ? currentUser(ownerUsername(file)) : null;
+    return u ? u.tier : 1;
+}
+
+// A file is gone (expired or removed early): its link answers 410 for as long as the owner chose,
+// and Recently uploaded shows it as expired until they remove it there.
+function markGone(file, early) {
+    const username = ownerUsername(file);
+    const months = username ? userSettings.get(username).expiredPageMonths : 0;
+    expiredPages.add(file, early ? Math.max(1, months) : months, early);
+    if (!username) return;
+    if (months > 0 || early) userSync.patchEntry(username, file.id, { expired: true, expiredAt: Date.now(), ...(early ? { removedEarly: true } : {}) });
+    else userSync.recordRemoval(username, file.id);
+}
+
+// Only when free space fell below the reserve: tier 0 first, then 1 (oldest, then biggest), then 2; never 3
+function evictIfFull() {
+    const free = limits.freeBytes();
+    if (free === null || free >= limits.RESERVE_BYTES) return 0;
+    const target = limits.RESERVE_BYTES + 512 * 1024 * 1024;
+    const victims = registry.files
+        .filter(f => !f.isTextReader && !f.isMdReader && !f.isAudioPlayer && tierOf(f) < 3)
+        .sort((a, b) => tierOf(a) - tierOf(b) || (a.uploadedAt || 0) - (b.uploadedAt || 0) || (b.size || 0) - (a.size || 0));
+    let removed = 0;
+    for (const f of victims) {
+        const now = limits.freeBytes();
+        if (now === null || now >= target) break;
+        removeFile(f, 'evicted');
+        markGone(f, true);
+        removed++;
+    }
+    if (removed) console.warn(`⚠️  [EVICT] Disk below the reserve: removed ${removed} file(s) early`);
+    return removed;
+}
+
+const registryAccess = {
+    get: () => registry,
+    saveSync: () => saveRegistrySync(),
+    heartbeat: touchHeartbeat,
+    hooks: { onExpired: file => markGone(file, false), evict: () => evictIfFull(), prune: () => { expiredPages.prune(); stats.prune(new Set(registry.files.map(f => f.id))); } },
+};
+
 // ─── Manifest Mutex (for chunk uploads) ──────────────────────────────────────
 
 const manifestMutexes = new Map();
@@ -315,6 +417,7 @@ async function withManifestLock(uploadId, fn) {
 }
 
 function writeManifest(uploadId, data) {
+    if (!security.isUploadId(uploadId)) throw new Error('invalid upload id');
     const manifestPath = path.join(dirs.chunks, `${uploadId}_manifest.json`);
     const tmpPath = manifestPath + '.tmp';
     fs.writeFileSync(tmpPath, JSON.stringify(data)); // compact: this is rewritten on EVERY chunk, pretty-printing a 10k+ entry receivedChunks array was pure overhead
@@ -322,9 +425,17 @@ function writeManifest(uploadId, data) {
 }
 
 function readManifest(uploadId) {
+    if (!security.isUploadId(uploadId)) return null;
     const manifestPath = path.join(dirs.chunks, `${uploadId}_manifest.json`);
     if (!fs.existsSync(manifestPath)) return null;
-    return JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+    try {
+        const m = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+        if (!m || !Array.isArray(m.receivedChunks)) return null;
+        return m;
+    } catch (e) {
+        console.error(`⚠️  [MANIFEST] Unreadable manifest for ${uploadId}:`, e.message);
+        return null;
+    }
 }
 
 // Wipes every chunk + the manifest for a given uploadId. Used by the
@@ -333,6 +444,7 @@ function readManifest(uploadId) {
 // >24h sweep to eventually catch it.
 function deleteChunksAndManifest(uploadId) {
     let removedChunks = 0;
+    if (!security.isUploadId(uploadId)) return 0;
     try {
         for (const file of fs.readdirSync(dirs.chunks)) {
             if (file === `${uploadId}_manifest.json` || file.startsWith(`${uploadId}_chunk_`)) {
@@ -352,8 +464,9 @@ const assemblyInProgress = new Set();
 
 // ─── Browser-Friendly Types ─────────────────────────────────────────────────
 
+// SVG is not on the list: it can carry scripts, so it is stored as a download (attachment)
 const browserFriendlyTypes = {
-    image: ['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/svg+xml', 'image/bmp'],
+    image: ['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/bmp', 'image/avif'],
     video: ['video/mp4', 'video/webm', 'video/ogg', 'video/quicktime'],
     audio: ['audio/mpeg', 'audio/mp3', 'audio/wav', 'audio/x-wav', 'audio/wave', 'audio/ogg', 'audio/opus', 'audio/webm',
         'audio/aac', 'audio/mp4', 'audio/x-m4a', 'audio/m4a', 'audio/flac', 'audio/x-flac']
@@ -365,13 +478,31 @@ function isBrowserFriendly(mimetype, category) {
 
 // ─── Category Helpers ────────────────────────────────────────────────────────
 
-function getDestDir(mimeType) {
+// nginx picks the Content-Type from the extension, so an inline folder only takes
+// extensions that are served as that media type. Anything else is a download.
+const INLINE_EXTENSIONS = {
+    pictures: ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.avif'],
+    videos: ['.mp4', '.m4v', '.webm', '.ogv', '.ogg', '.mov'],
+    audio: ['.mp3', '.wav', '.ogg', '.oga', '.opus', '.webm', '.weba', '.aac', '.m4a', '.mp4', '.flac'],
+    text: ['.md', '.markdown', '.txt'],
+};
+
+function getDestDir(mimeType, filename) {
+    mimeType = typeof mimeType === 'string' ? mimeType : '';
+    const ext = path.extname(String(filename || '')).toLowerCase();
+    const allowed = (folder) => INLINE_EXTENSIONS[folder].includes(ext);
     const type = mimeType.split('/')[0];
-    if (type === 'image' && isBrowserFriendly(mimeType, 'image')) return dirs.pictures;
-    if (type === 'video' && isBrowserFriendly(mimeType, 'video')) return dirs.videos;
-    if (type === 'audio' && isBrowserFriendly(mimeType, 'audio')) return dirs.audio;
-    if (mimeType === 'text/markdown') return dirs.text;
+    if (type === 'image' && isBrowserFriendly(mimeType, 'image') && allowed('pictures')) return dirs.pictures;
+    if (type === 'video' && isBrowserFriendly(mimeType, 'video') && allowed('videos')) return dirs.videos;
+    if (type === 'audio' && isBrowserFriendly(mimeType, 'audio') && allowed('audio')) return dirs.audio;
+    if (mimeType === 'text/markdown' && allowed('text')) return dirs.text;
     return dirs.download;
+}
+
+// Client-sent MIME type, reduced to a plain `type/subtype` (no parameters, no junk)
+function cleanMimeType(raw) {
+    const m = /^([a-z0-9][a-z0-9.+-]{0,63})\/([a-z0-9][a-z0-9.+-]{0,127})/i.exec(String(raw || '').trim());
+    return m ? `${m[1]}/${m[2]}`.toLowerCase() : 'application/octet-stream';
 }
 
 function getDirCategory(destDir) {
@@ -384,7 +515,7 @@ function getDirCategory(destDir) {
 }
 
 function getFileType(mimeType) {
-    const type = mimeType.split('/')[0];
+    const type = String(mimeType || '').split('/')[0];
     if (type === 'video') return 'video';
     if (type === 'audio') return 'audio';
     if (type === 'image') return 'image';
@@ -823,7 +954,7 @@ silentCheck();
 
 // fileUrl: the real public link of the stored file. Readers must not guess the
 // directory: it depends on the MIME type the browser sent, not on the extension.
-function maybeCreateTextReader(storedFilename, originalName, mimeType, expiresAt, fileUrl) {
+function maybeCreateTextReader(storedFilename, originalName, mimeType, expiresAt, fileUrl, ownerKey = null) {
     // Generate a reader page for .txt files (or text/plain)
     const isTxt = mimeType === 'text/plain' || storedFilename.toLowerCase().endsWith('.txt');
     if (!isTxt) return null;
@@ -852,7 +983,8 @@ function maybeCreateTextReader(storedFilename, originalName, mimeType, expiresAt
                             category: 'file',
                             uploadedAt: Date.now(),
                             expiresAt: expiresAt,
-                            isTextReader: true
+                            isTextReader: true,
+                            ownerKey
         });
 
         return readerUrl;
@@ -1158,7 +1290,7 @@ silentCheck();
 
 // .md files land in files/text only when the browser sends text/markdown; Windows
 // browsers usually send application/octet-stream, which stores them in files/download.
-function maybeCreateMdReader(storedFilename, originalName, mimeType, expiresAt, fileUrl) {
+function maybeCreateMdReader(storedFilename, originalName, mimeType, expiresAt, fileUrl, ownerKey = null) {
     const isMd = mimeType === 'text/markdown' || storedFilename.toLowerCase().endsWith('.md');
     if (!isMd) return null;
 
@@ -1182,7 +1314,8 @@ function maybeCreateMdReader(storedFilename, originalName, mimeType, expiresAt, 
             category: 'file',
             uploadedAt: Date.now(),
             expiresAt: expiresAt,
-            isMdReader: true
+            isMdReader: true,
+            ownerKey
         });
         saveRegistry();
         return readerUrl;
@@ -1197,7 +1330,7 @@ function maybeCreateMdReader(storedFilename, originalName, mimeType, expiresAt, 
 // to the audio file on disk (for ffprobe/aubio). publicAudioUrl: the URL
 // the player's <audio> tag will stream from. expiresAt: same expiry as the
 // track, so the player HTML dies alongside it in cleanup.js.
-async function maybeCreateAudioPlayer(storedFilename, originalName, mimeType, filePath, publicAudioUrl, expiresAt, voiceNote) {
+async function maybeCreateAudioPlayer(storedFilename, originalName, mimeType, filePath, publicAudioUrl, expiresAt, voiceNote, ownerKey = null) {
     const result = await audioPlayerLib.maybeCreateAudioPlayer(
         storedFilename, originalName, mimeType, filePath, dirs.players, publicAudioUrl, undefined, { voiceNote: !!voiceNote }
     );
@@ -1218,6 +1351,7 @@ async function maybeCreateAudioPlayer(storedFilename, originalName, mimeType, fi
         uploadedAt: Date.now(),
         expiresAt: expiresAt,
         isAudioPlayer: true,
+        ownerKey,
         ...(result.voiceNote ? { isVoiceNote: true } : {})
     });
     saveRegistry();
@@ -1235,15 +1369,15 @@ function safeExt(ext) {
 }
 
 const storage = multer.diskStorage({
+    // Never a public folder: the final folder is chosen after the upload is checked
     destination: function(req, file, cb) {
-        cb(null, getDestDir(file.mimetype));
+        fs.mkdir(dirs.incoming, { recursive: true }, err => cb(err, dirs.incoming));
     },
     filename: function(req, file, cb) {
         // Don't decide final name here — req.body isn't reliably populated yet
         // because multer processes multipart fields in stream order, and
         // 'file' is typically appended before anonymize/removeTimestamp.
-        const tempName = `tmp_${Date.now()}_${crypto.randomBytes(6).toString('hex')}${path.extname(file.originalname)}`;
-        cb(null, tempName);
+        cb(null, `tmp_${Date.now()}_${crypto.randomBytes(8).toString('hex')}`);
     }
 });
 
@@ -1262,7 +1396,7 @@ const chunkStorage = multer.diskStorage({
         cb(null, dirs.chunks);
     },
     filename: (req, file, cb) => {
-        cb(null, `chunk_tmp_${Date.now()}_${Math.random().toString(36).slice(2)}`);
+        cb(null, `chunk_tmp_${Date.now()}_${crypto.randomBytes(8).toString('hex')}`);
     }
 });
 
@@ -1302,20 +1436,22 @@ function getUsedSpace() {
 
 // ─── Chunk Cleanup Interval ─────────────────────────────────────────────────
 
+// Files untouched for a day: abandoned chunks/manifests and interrupted single uploads (incoming/)
 setInterval(() => {
-    if (!fs.existsSync(dirs.chunks)) return;
-    const now = Date.now();
-    const oneDayAgo = now - (24 * 60 * 60 * 1000);
-    fs.readdirSync(dirs.chunks).forEach(file => {
-        try {
-            const filePath = path.join(dirs.chunks, file);
-            const stats = fs.statSync(filePath);
-            if (stats.mtimeMs < oneDayAgo) {
-                fs.unlinkSync(filePath);
-                console.log(`🗑️ Deleted old chunk/manifest: ${file}`);
-            }
-        } catch (e) {}
-    });
+    const oneDayAgo = Date.now() - (24 * 60 * 60 * 1000);
+    for (const dir of [dirs.chunks, dirs.incoming]) {
+        if (!fs.existsSync(dir)) continue;
+        for (const file of fs.readdirSync(dir)) {
+            try {
+                const filePath = path.join(dir, file);
+                const stats = fs.statSync(filePath);
+                if (stats.isFile() && stats.mtimeMs < oneDayAgo) {
+                    fs.unlinkSync(filePath);
+                    console.log(`🗑️ Deleted old chunk/manifest: ${file}`);
+                }
+            } catch (e) {}
+        }
+    }
     console.log(`🧹 Chunk cleanup completed at ${new Date().toISOString()}`);
 }, 60 * 60 * 1000).unref();
 
@@ -1418,19 +1554,11 @@ function formatDuration(sec) {
     return `${m}:${String(s).padStart(2, '0')}`;
 }
 
-function ffprobeJson(filePath) {
-    return new Promise((resolve) => {
-        execFile('ffprobe', [
-            '-v', 'error',
-            '-print_format', 'json',
-            '-show_format',
-            '-show_streams',
-            filePath
-        ], { timeout: 15000, maxBuffer: 5 * 1024 * 1024 }, (err, stdout) => {
-            if (err || !stdout) return resolve(null);
-            try { resolve(JSON.parse(stdout)); } catch (e) { resolve(null); }
-        });
-    });
+async function ffprobeJson(filePath) {
+    const r = await mediaQueue.run('ffprobe', ['-v', 'error', '-print_format', 'json', '-show_format', '-show_streams', filePath],
+        { timeoutMs: 15000, maxBytes: 5 * 1024 * 1024 });
+    if (r.code !== 0 || !r.stdout.length) return null;
+    try { return JSON.parse(r.stdout.toString('utf8')); } catch (e) { return null; }
 }
 
 // category: 'video' | 'audio' — anything else returns null immediately
@@ -1478,16 +1606,18 @@ function isTextFile(mimeType, filename) {
         || /\.(txt|md)$/i.test(filename || '');
 }
 
+// Streams the file instead of reading it whole: a big text upload must not block the server
 function getTextStats(filePath) {
-    try {
-        const content = fs.readFileSync(filePath, 'utf8');
-        return {
-            chars: content.length,
-            lines: content.split('\n').length
-        };
-    } catch (e) {
-        return null;
-    }
+    return new Promise(resolve => {
+        let chars = 0, lines = 1;
+        const stream = fs.createReadStream(filePath, { encoding: 'utf8' });
+        stream.on('data', chunk => {
+            chars += chunk.length;
+            for (let i = chunk.indexOf('\n'); i !== -1; i = chunk.indexOf('\n', i + 1)) lines++;
+        });
+        stream.on('end', () => resolve({ chars, lines }));
+        stream.on('error', () => resolve(null));
+    });
 }
 
 // Builds the "Name | metadata | TomasekValla Filestream System" label.
@@ -1541,15 +1671,26 @@ function buildStyledLabel(originalName, sizeBytes, category, probe, textStats) {
 const styledLinkStore = new Map(); // fileId -> { ready, styledLink, thumbnail }
 const STYLED_LINK_TTL = 10 * 60 * 1000; // 10 min, then forget it
 
+// fileId -> owner key: only the uploader may poll the styled link (name, metadata, thumbnail)
+const styledLinkOwners = new Map();
+
+// Tier 0 (host) gets no media work: the plain link is ready at once
+function plainStyledLink(fileId, originalName, sizeBytes, link, ownerKey) {
+    styledLinkStore.set(fileId, { ready: true, styledLink: `[${originalName} | ${formatBytes(sizeBytes)} | TomasekValla Filestream System](${link})`, thumbnail: null });
+    styledLinkOwners.set(fileId, ownerKey);
+    setTimeout(() => { styledLinkStore.delete(fileId); styledLinkOwners.delete(fileId); }, STYLED_LINK_TTL);
+}
+
 function schedulePendingStyledLink(fileId, originalName, filePath, sizeBytes, category, link, ownerUsername) {
     styledLinkStore.set(fileId, { ready: false, styledLink: null, thumbnail: null });
-    setTimeout(() => styledLinkStore.delete(fileId), STYLED_LINK_TTL);
+    styledLinkOwners.set(fileId, ownerUsername ? `user:${ownerUsername}` : null);
+    setTimeout(() => { styledLinkStore.delete(fileId); styledLinkOwners.delete(fileId); }, STYLED_LINK_TTL);
 
     (async () => {
         let styledLink;
         try {
             const probe = await probeMedia(filePath, category);
-            const textStats = isTextFile(null, originalName) ? getTextStats(filePath) : null;
+            const textStats = isTextFile(null, originalName) ? await getTextStats(filePath) : null;
             const label = buildStyledLabel(originalName, sizeBytes, category, probe, textStats);
             styledLink = `[${label}](${link})`;
         } catch (e) {
@@ -1625,12 +1766,32 @@ router.get('/status', (req, res) => {
         // integer. Client compares against its last-known version (already
         // polling this endpoint every 10s) and only calls /api/user/sync
         // when it actually changed, so no payload is wasted on every tick.
-        userVersion: userSync.getVersion(auth.username),
+        // the host login is shared by strangers: no server-side history for it
+        userVersion: auth.isHost ? 0 : userSync.getVersion(auth.username),
         // Unfinished chunked uploads for this user, across ALL their devices.
         // Small array (realistically 0-2 entries), so no separate diffing —
         // the client filters out its own in-progress upload by uploadId.
         pendingUploads: getPendingUploadsForOwner(auth.ownerKey)
     });
+});
+
+// ─── GET /api/config ─────────────────────────────────────────────────────────
+// The upload rules of the caller's tier (expiry options, caps per size and free space, limits),
+// so the web page and the app grey out what the server would not allow.
+router.get('/config', (req, res) => {
+    const auth = authenticateRequest(req);
+    if (!auth.valid) return res.status(403).json({ error: 'Unauthorized' });
+    res.set('Cache-Control', 'no-store');
+    res.json(limits.clientConfig(auth.tier));
+});
+
+// ─── GET /api/space ──────────────────────────────────────────────────────────
+// What uploads can still use: free space minus the 2 GB reserve (0 when only the reserve is left)
+router.get('/space', (req, res) => {
+    const auth = authenticateRequest(req);
+    if (!auth.valid) return res.status(403).json({ error: 'Unauthorized' });
+    res.set('Cache-Control', 'no-store');
+    res.json({ availableBytes: limits.availableBytes() });
 });
 
 // ─── GET /api/user/sync ───────────────────────────────────────────────────
@@ -1642,6 +1803,7 @@ router.get('/user/sync', (req, res) => {
     const auth = authenticateRequest(req);
     if (!auth.valid) return res.status(403).json({ error: 'Unauthorized' });
 
+    if (auth.isHost) return res.json({ mode: 'full', version: 0, files: [] });
     const since = req.query.since !== undefined ? parseInt(req.query.since, 10) : NaN;
 
     if (!Number.isFinite(since) || since <= 0) {
@@ -1660,16 +1822,17 @@ router.get('/user/sync', (req, res) => {
 
 // ─── POST /api/verify-password ───────────────────────────────────────────────
 
-router.post('/verify-password', rateLimit({ windowMs: 15 * 60 * 1000, max: 10, keyPrefix: 'login:' }), (req, res) => {
+router.post('/verify-password', (req, res) => {
     const { username, password } = req.body || {};
-    if (!username || !password) {
+    if (typeof username !== 'string' || typeof password !== 'string' || !username || !password) {
         return res.status(400).json({ valid: false, tier: 0 });
     }
 
     // Username and password are checked together against each user's own
     // secret pair — a wrong username and a wrong password both just get a
     // generic 403, so a scanner can't tell which one it got wrong.
-    const user = findUser(username, password);
+    const { blocked, user } = checkLogin(req, res, username, password);
+    if (blocked) return;
     if (!user) {
         return res.status(403).json({ valid: false, tier: 0 });
     }
@@ -1680,14 +1843,15 @@ router.post('/verify-password', rateLimit({ windowMs: 15 * 60 * 1000, max: 10, k
 // Verifies password and issues a random session token stored in an httpOnly cookie.
 // The password hash is NEVER stored in a cookie — only the opaque session token.
 
-router.post('/auth', rateLimit({ windowMs: 15 * 60 * 1000, max: 10, keyPrefix: 'login:' }), (req, res) => {
+router.post('/auth', (req, res) => {
     const { username, password, remember } = req.body || {};
 
-    if (!username || !password) {
+    if (typeof username !== 'string' || typeof password !== 'string' || !username || !password) {
         return res.status(400).json({ valid: false, error: 'Username and password required' });
     }
 
-    const user = findUser(username, password);
+    const { blocked, user } = checkLogin(req, res, username, password);
+    if (blocked) return;
     if (!user) {
         return res.status(403).json({ valid: false, tier: 0 });
     }
@@ -1712,6 +1876,17 @@ router.post('/logout', (req, res) => {
     res.json({ ok: true });
 });
 
+// ─── POST /api/logout-everywhere ─────────────────────────────────────────
+// The logged-in user ends every one of their own sessions (all devices).
+router.post('/logout-everywhere', (req, res) => {
+    const auth = authenticateRequest(req);
+    if (!auth.valid) return res.status(403).json({ error: 'Unauthorized' });
+    const count = auth.isHost ? (deleteSession(req.cookies.tvfs_token), 1) : deleteUserSessions(auth.username);
+    res.clearCookie('tvfs_token', { path: '/', sameSite: 'lax', secure: true });
+    res.clearCookie('tvfs_tier',  { path: '/', sameSite: 'lax', secure: true });
+    res.json({ ok: true, sessionsEnded: count });
+});
+
 // ─── POST /api/logout-all ─────────────────────────────────────────────────
 // Invalidates EVERY currently logged-in session, everywhere, instantly —
 // no restart, no manual file editing. Gated behind ADMIN_SECRET (set it in
@@ -1722,8 +1897,11 @@ router.post('/logout-all', rateLimit({ windowMs: 15 * 60 * 1000, max: 5, keyPref
     if (!process.env.ADMIN_SECRET) {
         return res.status(403).json({ error: 'ADMIN_SECRET not configured on the server' });
     }
-    const provided = req.headers['x-admin-secret'] || (req.body && req.body.secret);
-    if (provided !== process.env.ADMIN_SECRET) {
+    const provided = String(req.headers['x-admin-secret'] || (req.body && req.body.secret) || '');
+    const expected = process.env.ADMIN_SECRET;
+    const a = Buffer.from(provided), b = Buffer.from(expected);
+    const same = a.length === b.length && crypto.timingSafeEqual(a, b);
+    if (!same) {
         return res.status(403).json({ error: 'Forbidden' });
     }
 
@@ -1732,6 +1910,12 @@ router.post('/logout-all', rateLimit({ windowMs: 15 * 60 * 1000, max: 5, keyPref
     saveSessionsSync();
     console.log(`🔐 [ADMIN] All ${count} session(s) invalidated via /api/logout-all`);
     res.json({ ok: true, sessionsCleared: count });
+});
+
+// Ids taken from the URL go into file paths and registry lookups: strict format or 400
+router.param('uploadId', (req, res, next, value) => {
+    if (!security.isUploadId(value)) return res.status(400).json({ error: 'Invalid upload ID' });
+    next();
 });
 
 // ─── GET /api/upload/status/:uploadId ────────────────────────────────────────
@@ -1790,6 +1974,9 @@ router.delete('/upload/chunks/:uploadId', async (req, res) => {
     if (manifest.ownerKey && manifest.ownerKey !== auth.ownerKey) {
         return res.status(403).json({ error: 'This upload session belongs to a different session' });
     }
+    if (assemblyInProgress.has(uploadId)) {
+        return res.status(409).json({ error: 'This upload is being assembled right now' });
+    }
 
     const removedChunks = await withManifestLock(uploadId, async () => deleteChunksAndManifest(uploadId));
 
@@ -1814,6 +2001,47 @@ router.delete('/upload/chunks/:uploadId', async (req, res) => {
 // CRON doesn't need to care, since the registry entry (and the file it
 // pointed to) is simply gone.
 
+// Removes one upload with its thumbnail, reader/player pages, batch link and the owner's history
+// entry. Returns the size it had. reason: 'manual' | 'host-space' | 'evicted' (the cleanup uses its own pass)
+function removeFile(file, reason) {
+    let size = file.size || 0;
+    try {
+        if (file.path && fs.existsSync(file.path)) {
+            size = fs.statSync(file.path).size;
+            if (isPathReferenced(file.path, file)) {
+                console.warn(`⚠️  [DELETE] Skipping unlink of ${file.path}: still referenced by another registry entry`);
+            } else {
+                fs.unlinkSync(file.path);
+            }
+        }
+    } catch (e) {
+        console.error(`⚠️  [DELETE] Failed to unlink ${file.path}:`, e.message);
+    }
+    thumbnails.deleteThumbnail(file.id);
+    // Generated reader/player pages; older uploads may share one page, keep it while another file links to it
+    const pageDirs = { textReaderLink: dirs.text, mdReaderLink: dirs.text, audioPlayerLink: dirs.players };
+    for (const [linkField, pageDir] of Object.entries(pageDirs)) {
+        if (!file[linkField]) continue;
+        if (registry.files.some(f => f !== file && f[linkField] === file[linkField])) continue;
+        try {
+            const pagePath = path.join(pageDir, path.basename(file[linkField]));
+            if (fs.existsSync(pagePath)) fs.unlinkSync(pagePath);
+        } catch (e) {}
+    }
+    const idx = registry.files.indexOf(file);
+    if (idx !== -1) registry.files.splice(idx, 1);
+    if (file.batchId) {
+        const batchEntry = registry.batches.find(b => b.id === file.batchId);
+        if (batchEntry) batchEntry.files = batchEntry.files.filter(fid => fid !== file.id);
+    }
+    saveRegistry();
+    // an evicted file stays in Recently uploaded, marked "removed early" (markGone)
+    const owner = file.ownerKey && file.ownerKey.startsWith('user:') ? file.ownerKey.slice(5) : null;
+    if (owner && reason !== 'evicted') userSync.recordRemoval(owner, file.id);
+    if (reason !== 'manual') console.log(`🗑️  [${reason.toUpperCase()}] ${file.originalName || file.storedName} (${formatBytes(size)})`);
+    return size;
+}
+
 router.delete('/file/:id', async (req, res) => {
     const auth = authenticateRequest(req);
     if (!auth.valid) return res.status(403).json({ error: 'Invalid password' });
@@ -1825,48 +2053,13 @@ router.delete('/file/:id', async (req, res) => {
     }
     const file = registry.files[idx];
 
-    if (file.ownerKey && file.ownerKey !== auth.ownerKey) {
+    // Owner only. Entries without an owner (from before owners were recorded) only the top tier may delete.
+    const mayDelete = file.ownerKey ? file.ownerKey === auth.ownerKey : auth.tier >= 2;
+    if (!mayDelete) {
         return res.status(403).json({ error: 'This file belongs to a different session' });
     }
 
-    let sizeForLog = file.size || 0;
-    try {
-        if (file.path && fs.existsSync(file.path)) {
-            sizeForLog = fs.statSync(file.path).size;
-            if (isPathReferenced(file.path, file)) {
-                console.warn(`⚠️  [MANUAL DELETE] Skipping unlink of ${file.path}: still referenced by another registry entry`);
-            } else {
-                fs.unlinkSync(file.path);
-            }
-        }
-    } catch (e) {
-        console.error(`⚠️  [MANUAL DELETE] Failed to unlink ${file.path}:`, e.message);
-    }
-
-    thumbnails.deleteThumbnail(file.id);
-
-    // Best-effort cleanup of generated reader/player pages, if any existed.
-    // Text/MD readers live in dirs.text, audio players in dirs.players.
-    const pageDirs = { textReaderLink: dirs.text, mdReaderLink: dirs.text, audioPlayerLink: dirs.players };
-    for (const [linkField, pageDir] of Object.entries(pageDirs)) {
-        if (!file[linkField]) continue;
-        // Older uploads may share one page: keep it while another file still links to it
-        if (registry.files.some(f => f !== file && f[linkField] === file[linkField])) continue;
-        try {
-            const pagePath = path.join(pageDir, path.basename(file[linkField]));
-            if (fs.existsSync(pagePath)) fs.unlinkSync(pagePath);
-        } catch (e) {}
-    }
-
-    registry.files.splice(idx, 1);
-    if (file.batchId) {
-        const batchEntry = registry.batches.find(b => b.id === file.batchId);
-        if (batchEntry) batchEntry.files = batchEntry.files.filter(fid => fid !== fileId);
-    }
-    saveRegistry();
-
-    const owner = file.ownerKey && file.ownerKey.startsWith('user:') ? file.ownerKey.slice(5) : null;
-    if (owner) userSync.recordRemoval(owner, fileId);
+    const sizeForLog = removeFile(file, 'manual');
 
     requestLogger.logEvent(req, 'deleted_manual', {
         fileId,
@@ -1882,52 +2075,246 @@ router.delete('/file/:id', async (req, res) => {
     res.json({ deleted: true });
 });
 
+// ─── POST /api/file/:id/keep-max ─────────────────────────────────────────────
+// "Keep for the maximum length": the file stays as long as the rules allow for the owner's tier
+// and its size, counted from the upload (never shorter than now).
+router.post('/file/:id/keep-max', (req, res) => {
+    const auth = authenticateRequest(req);
+    if (!auth.valid) return res.status(403).json({ error: 'Unauthorized' });
+    const file = registry.files.find(f => f.id === req.params.id);
+    if (!file) return res.status(404).json({ error: 'Not found' });
+    if (!file.ownerKey || file.ownerKey !== auth.ownerKey) return res.status(403).json({ error: 'Only the uploader can change this' });
+    // the file is already on disk, so the free-space rules count without it
+    const available = limits.availableBytes();
+    const maxMin = limits.maxExpiryMinutes(auth.tier, file.size || 0, available === null ? null : available + (file.size || 0));
+    const target = auth.tier === 0 ? limits.maxExpiryMinutes(0, 0) * 60000 + Date.now() : (file.uploadedAt || Date.now()) + maxMin * 60000;
+    if (target > file.expiresAt) {
+        file.expiresAt = target;
+        for (const f of registry.files) {
+            // its reader / player pages live as long as the file
+            if (f !== file && (f.path && [file.textReaderLink, file.mdReaderLink, file.audioPlayerLink].some(l => l && l.endsWith('/' + f.storedName)))) f.expiresAt = target;
+        }
+        saveRegistry();
+        if (auth.username && !auth.isHost) userSync.patchEntry(auth.username, file.id, { expiresAt: target });
+    }
+    res.json({ expiresAt: file.expiresAt, maxReached: true });
+});
+
+// ─── Settings, expired pages, statistics ─────────────────────────────────────
+
+router.get('/settings', (req, res) => {
+    const auth = authenticateRequest(req);
+    if (!auth.valid || auth.isHost) return res.status(403).json({ error: 'Unauthorized' });
+    res.set('Cache-Control', 'no-store');
+    res.json(userSettings.get(auth.username));
+});
+
+router.put('/settings', (req, res) => {
+    const auth = authenticateRequest(req);
+    if (!auth.valid || auth.isHost) return res.status(403).json({ error: 'Unauthorized' });
+    const err = userSettings.set(auth.username, req.body);
+    if (err) return res.status(400).json({ error: err });
+    res.json(userSettings.get(auth.username));
+});
+
+// The owner removes an "expired" (410) record from Recently uploaded: the link then answers 404
+router.delete('/expired/:fileId', (req, res) => {
+    const auth = authenticateRequest(req);
+    if (!auth.valid || auth.isHost) return res.status(403).json({ error: 'Unauthorized' });
+    const removed = expiredPages.removeForOwner(req.params.fileId, auth.ownerKey);
+    userSync.recordRemoval(auth.username, req.params.fileId);
+    res.json({ removed });
+});
+
+// Opens and plays of the caller's files, plus the numbers of the whole TVFS history
+router.get('/stats', (req, res) => {
+    const auth = authenticateRequest(req);
+    if (!auth.valid || auth.isHost) return res.status(403).json({ error: 'Unauthorized' });
+    const ids = registry.files.filter(f => f.ownerKey === auth.ownerKey).map(f => f.id);
+    const syncIds = (userSync.getFullList(auth.username).files || []).map(f => f.id);
+    res.set('Cache-Control', 'no-store');
+    res.json({ global: stats.global(), files: stats.forFiles(new Set([...ids, ...syncIds])) });
+});
+
+// The registry entry behind a public link path; a reader/player page counts for its file
+function fileForLinkPath(linkPath) {
+    const m = /^\/files\/([a-z]+)\/([^/]+)$/.exec(linkPath);
+    if (!m) return null;
+    const entry = registry.files.find(f => f.directory === m[1] && f.storedName === m[2]);
+    if (!entry) return null;
+    if (entry.isTextReader || entry.isMdReader || entry.isAudioPlayer) {
+        const tail = '/' + entry.storedName;
+        return registry.files.find(f => [f.textReaderLink, f.mdReaderLink, f.audioPlayerLink].some(l => l && l.endsWith(tail))) || entry;
+    }
+    return entry;
+}
+
+// The player pages report the first play
+router.post('/play', rateLimit({ windowMs: 60 * 1000, max: 30, keyPrefix: 'play:' }), (req, res) => {
+    let page = String((req.body && req.body.page) || '');
+    try { page = decodeURIComponent(new URL(page, 'https://x').pathname); } catch (e) { page = ''; }
+    const file = fileForLinkPath(page);
+    if (file) stats.countPlay(file.id, security.clientIp(req));
+    res.status(204).end();
+});
+
+// ─── Internal routes, only for the site nginx (not reachable through the public proxy) ───
+const internal = express.Router();
+
+// nginx mirrors every request for /files/ here; one open per client address and file per hour
+internal.get('/count', (req, res) => {
+    let p = String(req.query.u || '').split('?')[0];
+    try { p = decodeURIComponent(p); } catch (e) { return res.status(204).end(); }
+    // previews in the upload page's own lists are not opens
+    const referer = String(req.headers.referer || '');
+    if (/\/upload(\.html)?(\?|#|$)/.test(referer.replace(/^https?:\/\/[^/]+/, ''))) return res.status(204).end();
+    const file = fileForLinkPath(p);
+    if (file) stats.countOpen(file.id, security.clientIp(req));
+    res.status(204).end();
+});
+
+// A missing /files/ link: 410 "expired" when it has an expired-page record, otherwise 404
+internal.get(/^\/gone(\/files\/.+)$/, (req, res) => {
+    let p = req.params[0];
+    try { p = decodeURIComponent(p); } catch (e) {}
+    const rec = expiredPages.lookup(p);
+    res.set('Cache-Control', 'no-store');
+    res.status(rec ? 410 : 404).type('html').send(gonePage(rec));
+});
+
+function gonePage(rec) {
+    const title = rec ? (rec.early ? 'This file was removed early' : 'This file has expired') : 'Not found';
+    const text = rec
+        ? (rec.early ? 'The server ran out of space, so this file was removed before its time.' : 'Files on TVFS are kept only for a limited time. This one is no longer available.')
+        : 'There is no file at this address. The link may be wrong or the file may have expired.';
+    return `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${title} - TVFS</title><style>
+:root{color-scheme:light dark;--bg:#0f1115;--fg:#e8eaf0;--muted:#9aa3b2;--card:#171a21;--accent:#7c9cff}
+@media (prefers-color-scheme:light){:root{--bg:#f4f6fb;--fg:#151821;--muted:#5b6474;--card:#fff;--accent:#3a5bd9}}
+body{margin:0;min-height:100vh;display:grid;place-items:center;background:var(--bg);color:var(--fg);font:16px/1.5 system-ui,sans-serif;padding:16px;box-sizing:border-box}
+main{max-width:440px;background:var(--card);border-radius:16px;padding:28px 26px;text-align:center;box-shadow:0 10px 40px rgba(0,0,0,.25)}
+h1{font-size:1.35rem;margin:0 0 10px}p{color:var(--muted);margin:0 0 20px}a{color:var(--accent);font-weight:600;text-decoration:none}
+</style></head><body><main><h1>${title}</h1><p>${text}</p><a href="/upload.html">Go to TVFS</a></main></body></html>`;
+}
+
 // ─── GET /api/upload/styled-link/:fileId ─────────────────────────────────────
 // Polled by the frontend while ffprobe metadata (bitrate/fps/resolution/…) is
 // still being computed in the background, right after upload completion.
 
 router.get('/upload/styled-link/:fileId', (req, res) => {
+    const auth = authenticateRequest(req);
+    if (!auth.valid) return res.status(403).json({ error: 'Unauthorized' });
     const entry = styledLinkStore.get(req.params.fileId);
-    if (!entry) return res.json({ ready: false });
+    if (!entry || styledLinkOwners.get(req.params.fileId) !== auth.ownerKey) return res.json({ ready: false });
     res.json(entry);
 });
 
 // ─── POST /api/upload/init ───────────────────────────────────────────────────
 
+// Upload limits. A chunk is at most 105 MB (see chunkUpload), the smallest the web sends is 96 KB.
+const MAX_CHUNKS = 200000;
+
+function hasRoomFor(bytes) {
+    const available = limits.availableBytes();
+    return available === null || bytes <= available;
+}
+
+function batchBytes(batch) {
+    return registry.files.filter(f => batch.files.includes(f.id)).reduce((sum, f) => sum + (f.size || 0), 0);
+}
+
+// Tier 0 shares one 1 GB budget: the oldest host uploads go first to make room
+function makeHostRoom(needed) {
+    const hostFiles = () => registry.files.filter(f => f.ownerKey && f.ownerKey.startsWith('host:'));
+    let used = hostFiles().reduce((sum, f) => sum + (f.size || 0), 0);
+    for (const f of hostFiles().sort((a, b) => (a.uploadedAt || 0) - (b.uploadedAt || 0))) {
+        if (used + needed <= limits.HOST_TOTAL_BYTES) break;
+        used -= removeFile(f, 'host-space');
+    }
+}
+
+// Size, batch, tier and free-space rules for a new upload; gives the expiry in minutes it gets
+function admitUpload(auth, size, batch, requestedExpiry) {
+    const maxFile = limits.maxFileBytes(auth.tier);
+    if (size > maxFile) return { ok: false, status: 413, error: `Too large: at most ${formatBytes(maxFile)} per file` };
+    if (batch && batchBytes(batch) + size > limits.MAX_FILE_BYTES) return { ok: false, status: 413, error: 'A batch can hold at most 5 GB' };
+    if (auth.tier === 0) makeHostRoom(size);
+    const expMinutes = limits.effectiveExpiryMinutes(auth.tier, size, requestedExpiry);
+    if (expMinutes <= 0) return { ok: false, status: 507, error: 'Not enough free space on the server for this file right now' };
+    return { ok: true, expMinutes };
+}
+
+// Stored name: the original base name plus a short random suffix (shorter for higher tiers;
+// tier 3, and tier 2 asking for it, get no suffix while the name is free)
+function storedName(base, ext, tier, noSuffix) {
+    if (noSuffix) return `${base}${ext}`;
+    return `${base}_${security.randomSuffix(limits.SUFFIX_LENGTH[tier] || 6)}${ext}`;
+}
+
+// A display name from the client: no path, no control characters, bounded length
+function cleanFilename(raw) {
+    const s = String(raw == null ? '' : raw).replace(/[\x00-\x1f\x7f]/g, '').split(/[\\/]/).pop().trim();
+    return s.slice(0, 255) || 'file';
+}
+
+// The batch a new file may join: it must belong to the uploader. A batch that is gone
+// (expired meanwhile) only means the file is stored without a batch.
+function ownBatch(batchId, auth) {
+    if (!batchId) return { ok: true, batch: null };
+    if (!security.isBatchId(batchId)) return { ok: false, status: 400, error: 'Invalid batchId' };
+    const batch = registry.batches.find(b => b.id === batchId);
+    if (!batch) return { ok: true, batch: null, missing: true };
+    if (batch.ownerKey !== auth.ownerKey) return { ok: false, status: 403, error: 'This batch belongs to someone else' };
+    return { ok: true, batch };
+}
+
 router.post('/upload/init', rateLimit({ windowMs: 60 * 1000, max: 20, keyPrefix: 'init:' }), (req, res) => {
-    const { filename, fileSize, mimeType, totalChunks, uploadMode, expirationMinutes, batchId, voiceNote } = req.body;
+    const { fileSize, totalChunks, uploadMode, expirationMinutes, batchId, voiceNote } = req.body || {};
 
     const auth = authenticateRequest(req);
     if (!auth.valid) {
         return res.status(403).json({ error: 'Invalid password' });
     }
 
-    const maxSize = 10 * 1024 * 1024 * 1024; // 10GB
-    if (fileSize && parseInt(fileSize) > maxSize) {
-        return res.status(413).json({ error: 'File too large. Maximum size is 10GB.' });
+    const filename = cleanFilename(req.body && req.body.filename);
+    const mimeType = cleanMimeType(req.body && req.body.mimeType);
+    const size = Number(fileSize);
+    if (!Number.isSafeInteger(size) || size < 0) {
+        return res.status(400).json({ error: 'Missing or invalid fileSize' });
     }
+    let chunks = null;
+    if (totalChunks !== undefined && totalChunks !== null && totalChunks !== '') {
+        chunks = Number(totalChunks);
+        if (!Number.isSafeInteger(chunks) || chunks < 1 || chunks > MAX_CHUNKS) {
+            return res.status(400).json({ error: `totalChunks must be 1-${MAX_CHUNKS}` });
+        }
+    }
+    const batchCheck = ownBatch(batchId, auth);
+    if (!batchCheck.ok) return res.status(batchCheck.status).json({ error: batchCheck.error });
+    const admit = admitUpload(auth, size, batchCheck.batch, expirationMinutes);
+    if (!admit.ok) return res.status(admit.status).json({ error: admit.error });
+    const expMinutes = admit.expMinutes;
 
-    const expMinutes = resolveExpirationMinutes(expirationMinutes);
-
-    const uploadId = `${Date.now()}_${Math.random().toString(36).substring(7)}`;
+    const uploadId = `${Date.now()}_${crypto.randomBytes(12).toString('hex')}`;
 
     const manifest = {
         uploadId,
         filename,
-        fileSize: parseInt(fileSize) || 0,
+        fileSize: size,
             mimeType,
             // Fixed-size uploads know their chunk count upfront. Auto/dynamic
             // uploads pick each chunk's size live as they go, so the total
             // isn't known until the chunk flagged isLastChunk actually lands
             // (see /upload/chunk below) — totalChunks stays null until then,
             // and /upload/complete refuses to assemble before it's set.
-            totalChunks: totalChunks ? parseInt(totalChunks) : null,
-            uploadMode: uploadMode || 'fast',
+            totalChunks: chunks,
+            uploadMode: ['fast', 'safe', 'weak'].includes(uploadMode) ? uploadMode : 'fast',
             receivedChunks: [],
+            receivedBytes: 0,
             createdAt: Date.now(),
             status: 'initialized',
             expirationMinutes: expMinutes,
-            batchId: batchId || null,
+            batchId: batchCheck.batch ? batchCheck.batch.id : null,
             ...(wantsVoiceNote(voiceNote, mimeType) ? { voiceNote: true } : {}),
             ownerKey: auth.ownerKey,
             ownerTier: auth.tier
@@ -1962,21 +2349,13 @@ router.post('/upload/init', rateLimit({ windowMs: 60 * 1000, max: 20, keyPrefix:
 // weak-connection mode into a 429 storm. Override with TVFS_CHUNK_RATE_MAX.
 const CHUNK_RATE_MAX_PER_MIN = parseInt(process.env.TVFS_CHUNK_RATE_MAX, 10) || 2400;
 
-router.post('/upload/chunk', rateLimit({ windowMs: 60 * 1000, max: CHUNK_RATE_MAX_PER_MIN, keyPrefix: 'chunk:' }), chunkUpload.single('chunk'), async (req, res) => {
-    const { uploadId, chunkIndex, isLastChunk } = req.body;
+router.post('/upload/chunk', rateLimit({ windowMs: 60 * 1000, max: CHUNK_RATE_MAX_PER_MIN, keyPrefix: 'chunk:' }), requireSession, chunkUpload.single('chunk'), async (req, res) => {
+    const { uploadId, chunkIndex, isLastChunk } = req.body || {};
+    const auth = req.auth; // checked by requireSession before the body was read
 
-    // SECURITY: this endpoint previously accepted chunk data with NO auth check
-    // at all — anyone who obtained (or guessed) an uploadId could write arbitrary
-    // file data to disk without ever passing a password. Fixed here.
-    const auth = authenticateRequest(req);
-    if (!auth.valid) {
+    if (!security.isUploadId(uploadId)) {
         if (req.file && fs.existsSync(req.file.path)) try { fs.unlinkSync(req.file.path); } catch (e) {}
-        return res.status(403).json({ error: 'Invalid password' });
-    }
-
-    if (!uploadId) {
-        if (req.file && fs.existsSync(req.file.path)) try { fs.unlinkSync(req.file.path); } catch (e) {}
-        return res.status(400).json({ error: 'Missing upload ID' });
+        return res.status(400).json({ error: 'Missing or invalid upload ID' });
     }
 
     if (!req.file) {
@@ -2029,8 +2408,11 @@ router.post('/upload/chunk', rateLimit({ windowMs: 60 * 1000, max: CHUNK_RATE_MA
                 return { error: 'Invalid upload ID or upload expired', status: 400 };
             }
 
-            if (index < 0 || (manifest.totalChunks !== null && index >= manifest.totalChunks)) {
+            if (index < 0 || index >= MAX_CHUNKS || (manifest.totalChunks !== null && index >= manifest.totalChunks)) {
                 return { error: `Invalid chunk index: ${index}`, status: 400 };
+            }
+            if (assemblyInProgress.has(uploadId)) {
+                return { error: 'Upload is already being assembled', status: 409 };
             }
 
             if (manifest.receivedChunks.includes(index)) {
@@ -2052,8 +2434,15 @@ router.post('/upload/chunk', rateLimit({ windowMs: 60 * 1000, max: CHUNK_RATE_MA
                 };
             }
 
+            // Never more bytes than the file was declared with (manifests from before this check have no counter)
+            const receivedBytes = typeof manifest.receivedBytes === 'number' ? manifest.receivedBytes : null;
+            if (receivedBytes !== null && receivedBytes + req.file.size > manifest.fileSize) {
+                return { error: 'Chunk exceeds the declared file size', status: 400 };
+            }
+
             fs.renameSync(tmpPath, numberedChunkPath);
 
+            if (receivedBytes !== null) manifest.receivedBytes = receivedBytes + req.file.size;
             manifest.receivedChunks.push(index);
             manifest.receivedChunks.sort((a, b) => a - b);
             manifest.lastChunkTime = Date.now();
@@ -2101,21 +2490,22 @@ router.post('/upload/chunk', rateLimit({ windowMs: 60 * 1000, max: CHUNK_RATE_MA
 // ─── POST /api/upload/complete ───────────────────────────────────────────────
 
 router.post('/upload/complete', async (req, res) => {
-    const { uploadId, anonymize, removeTimestamp, expirationMinutes, batchId } = req.body;
+    const { uploadId, anonymize, removeTimestamp, expirationMinutes, batchId } = req.body || {};
 
-    if (!uploadId) {
-        return res.status(400).json({ error: 'Missing upload ID' });
+    const auth = authenticateRequest(req);
+    if (!auth.valid) {
+        return res.status(403).json({ error: 'Invalid password' });
+    }
+    mediaQueue.enterPriority(limits.MEDIA_PRIORITY[auth.tier] || 0);
+
+    if (!security.isUploadId(uploadId)) {
+        return res.status(400).json({ error: 'Missing or invalid upload ID' });
     }
 
     const manifest = readManifest(uploadId);
 
     if (!manifest) {
         return res.status(400).json({ error: 'Invalid upload ID or upload expired' });
-    }
-
-    const auth = authenticateRequest(req);
-    if (!auth.valid) {
-        return res.status(403).json({ error: 'Invalid password' });
     }
 
     if (manifest.ownerKey && manifest.ownerKey !== auth.ownerKey) {
@@ -2127,17 +2517,27 @@ router.post('/upload/complete', async (req, res) => {
     }
 
     if (manifest.receivedChunks.length !== manifest.totalChunks) {
+        // Reports at most 100 missing indexes: the total comes from the client and must not size an array
+        const have = new Set(manifest.receivedChunks);
         const missing = [];
-        for (let i = 0; i < manifest.totalChunks; i++) {
-            if (!manifest.receivedChunks.includes(i)) missing.push(i);
+        for (let i = 0; i < manifest.totalChunks && missing.length < 100; i++) {
+            if (!have.has(i)) missing.push(i);
         }
         return res.status(400).json({
             error: 'Missing chunks',
             received: manifest.receivedChunks.length,
             expected: manifest.totalChunks,
-            missing
+            missing,
+            missingCount: manifest.totalChunks - have.size
         });
     }
+    if (typeof manifest.receivedBytes === 'number' && manifest.receivedBytes !== manifest.fileSize) {
+        return res.status(400).json({ error: `Received ${manifest.receivedBytes} bytes, the file was declared with ${manifest.fileSize}` });
+    }
+
+    // A batch named now (instead of at init) must belong to the uploader too
+    const batchCheck = ownBatch(batchId || manifest.batchId, auth);
+    if (!batchCheck.ok) return res.status(batchCheck.status).json({ error: batchCheck.error });
 
     // ── Assembly guard: reject duplicate concurrent complete requests ──────
     if (assemblyInProgress.has(uploadId)) {
@@ -2154,9 +2554,8 @@ router.post('/upload/complete', async (req, res) => {
     let assembledPath = null;
 
     try {
-        const destDir = getDestDir(manifest.mimeType);
+        const destDir = getDestDir(manifest.mimeType, manifest.filename);
         const category = getDirCategory(destDir);
-        const timestamp = Date.now();
         const rawExt = path.extname(manifest.filename);
         let name = path.basename(manifest.filename, rawExt);
         const ext = safeExt(rawExt);
@@ -2164,8 +2563,7 @@ router.post('/upload/complete', async (req, res) => {
         const isAnonymized = anonymize === true || anonymize === 'true';
 
         if (isAnonymized) {
-            const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
-            name = Array.from({ length: 16 }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
+            name = security.randomName(16);
         } else {
             name = name.normalize('NFD').replace(/[̀-ͯ]/g, '') // "Země" -> "Zeme" instead of "Zem_"
             .replace(/\s+/g, '_')
@@ -2176,15 +2574,18 @@ router.post('/upload/complete', async (req, res) => {
         // Anonymous files never get a timestamp; tier 2 may opt out of it.
         // The final name is decided up front and created exclusively, so the
         // assembled file never replaces an existing one and needs no rename.
-        const dropTimestamp = !isAnonymized && (removeTimestamp === true || removeTimestamp === 'true')
-            && auth.tier === 2 && /^\.\w+$/.test(ext) && name.length > 0;
-        const wantedFilename = (isAnonymized || dropTimestamp) ? `${name}${ext}` : `${name}_${timestamp}${ext}`;
+        const dropTimestamp = !isAnonymized && name.length > 0 && /^(\.\w+)?$/.test(ext)
+            && (auth.tier === 3 || ((removeTimestamp === true || removeTimestamp === 'true') && auth.tier >= 2));
+        const wantedFilename = isAnonymized ? `${name}${ext}` : storedName(name, ext, auth.tier, dropTimestamp);
         const { filename: finalFilename, filePath: finalPath, fd } = safeFs.openUnique(destDir, wantedFilename);
         assembledPath = finalPath;
         if (dropTimestamp) console.log(`✂️ Removed timestamp: ${finalFilename}`);
 
-        // Streaming assembly: createWriteStream + createReadStream pipe chain
+        // Streaming assembly. A write error (full disk, I/O) must reject this request,
+        // never become an uncaught 'error' event that takes the whole process down.
         const writeStream = fs.createWriteStream(finalPath, { fd });
+        const writeFailed = new Promise((_, reject) => writeStream.once('error', reject));
+        writeFailed.catch(() => {});
 
         for (let i = 0; i < manifest.totalChunks; i++) {
             const chunkPath = path.join(dirs.chunks, `${uploadId}_chunk_${String(i).padStart(4, '0')}`);
@@ -2194,20 +2595,17 @@ router.post('/upload/complete', async (req, res) => {
                 throw new Error(`Missing chunk file: ${i}`);
             }
 
-            await new Promise((resolve, reject) => {
+            await Promise.race([writeFailed, new Promise((resolve, reject) => {
                 const readStream = fs.createReadStream(chunkPath);
-                readStream.pipe(writeStream, { end: false });
-                readStream.on('end', () => {
-                    fs.unlinkSync(chunkPath);
-                    console.log(`  ✓ Streamed chunk ${i}/${manifest.totalChunks}`);
-                    resolve();
-                });
                 readStream.on('error', reject);
-            });
+                readStream.on('end', resolve);
+                readStream.pipe(writeStream, { end: false });
+            })]);
+            await fs.promises.unlink(chunkPath).catch(() => {});
         }
 
         writeStream.end();
-        await new Promise(resolve => writeStream.on('finish', resolve));
+        await Promise.race([writeFailed, new Promise(resolve => writeStream.once('finish', resolve))]);
 
         const finalStats = fs.statSync(finalPath);
         console.log(`📊 Assembly complete: ${finalStats.size} bytes`);
@@ -2222,19 +2620,19 @@ router.post('/upload/complete', async (req, res) => {
         const link = `https://files.tomasekvalla.cz${linkPath}`;
 
         // Expiration — prefer the value sent now, fall back to what was set at init time
-        const expMinutes = resolveExpirationMinutes(expirationMinutes || manifest.expirationMinutes);
+        const expMinutes = (expirationMinutes && limits.effectiveExpiryMinutes(auth.tier, manifest.fileSize, expirationMinutes)) || manifest.expirationMinutes || limits.effectiveExpiryMinutes(auth.tier, manifest.fileSize, null);
         const expiresAt = Date.now() + (expMinutes * 60 * 1000);
 
         // Register in file registry
         const fileId = generateFileId();
-        const textReaderLink = maybeCreateTextReader(finalFilename, manifest.filename, manifest.mimeType, expiresAt, link);
+        const textReaderLink = maybeCreateTextReader(finalFilename, manifest.filename, manifest.mimeType, expiresAt, link, auth.ownerKey);
         const textReaderStyledLink = textReaderLink
             ? `[${manifest.filename} - TomasekValla Filestream System Reader](${textReaderLink})`
             : null;
-        const mdReaderLink = maybeCreateMdReader(finalFilename, manifest.filename, manifest.mimeType, expiresAt, link);
+        const mdReaderLink = maybeCreateMdReader(finalFilename, manifest.filename, manifest.mimeType, expiresAt, link, auth.ownerKey);
         const mdReaderStyledLink = mdReaderLink ? `[${manifest.filename} - TVFS MD Reader](${mdReaderLink})` : null;
-        const audioPlayerResult = (getFileType(manifest.mimeType) === 'audio')
-            ? await maybeCreateAudioPlayer(finalFilename, manifest.filename, manifest.mimeType, finalPath, link, expiresAt, manifest.voiceNote === true)
+        const audioPlayerResult = (getFileType(manifest.mimeType) === 'audio' && !auth.isHost)
+            ? await maybeCreateAudioPlayer(finalFilename, manifest.filename, manifest.mimeType, finalPath, link, expiresAt, manifest.voiceNote === true, auth.ownerKey)
             : null;
         const audioPlayerLink = audioPlayerResult ? audioPlayerResult.playerUrl : null;
         const audioPlayerStyledLink = audioPlayerResult
@@ -2253,25 +2651,22 @@ router.post('/upload/complete', async (req, res) => {
             category: getFileType(manifest.mimeType),
                             uploadedAt: Date.now(),
                             expiresAt: expiresAt,
-                            batchId: batchId || manifest.batchId || null,
+                            batchId: batchCheck.batch ? batchCheck.batch.id : null,
                             textReaderLink: textReaderLink || null,
                             mdReaderLink: mdReaderLink || null,
                             audioPlayerLink: audioPlayerLink || null,
                             trackBpm: audioPlayerResult ? audioPlayerResult.meta.bpm : null,
                             ...(isVoiceNote ? { voiceNote: true } : {}),
-                            ownerKey: auth.ownerKey || manifest.ownerKey || null
+                            ownerKey: auth.ownerKey || manifest.ownerKey || null,
+                            ownerTier: auth.tier
         });
 
-        // If part of a batch, add fileId to batch entry
-        if (batchId || manifest.batchId) {
-            const targetBatchId = batchId || manifest.batchId;
-            const batchEntry = registry.batches.find(b => b.id === targetBatchId);
-            if (batchEntry) {
-                batchEntry.files.push(fileId);
-            }
-        }
+        // If part of a batch (checked above: it exists and is the uploader's), add the file to it
+        if (batchCheck.batch) batchCheck.batch.files.push(fileId);
 
         saveRegistry();
+
+        stats.countUpload(registry.files[registry.files.length - 1] ? registry.files[registry.files.length - 1].size : 0);
 
         requestLogger.logEvent(req, 'complete', {
             uploadId,
@@ -2287,9 +2682,10 @@ router.post('/upload/complete', async (req, res) => {
 
         console.log(`✅ [CHUNKED UPLOAD COMPLETE] ${finalFilename} (${(finalStats.size / 1024 / 1024).toFixed(2)} MB, expires: ${new Date(expiresAt).toISOString()})`);
 
-        schedulePendingStyledLink(fileId, manifest.filename, finalPath, finalStats.size, getFileType(manifest.mimeType), link, auth.username);
+        if (auth.isHost) plainStyledLink(fileId, manifest.filename, finalStats.size, link, auth.ownerKey);
+        else schedulePendingStyledLink(fileId, manifest.filename, finalPath, finalStats.size, getFileType(manifest.mimeType), link, auth.username);
 
-        if (auth.username) {
+        if (auth.username && !auth.isHost) {
             userSync.recordUpload(auth.username, {
                 id: fileId,
                 name: manifest.filename,
@@ -2367,7 +2763,7 @@ router.post('/upload/batch/init', rateLimit({ windowMs: 60 * 1000, max: 20, keyP
     }
 
     const { expirationMinutes } = req.body;
-    const expiresAt = computeExpiresAt(expirationMinutes);
+    const expiresAt = Date.now() + (limits.effectiveExpiryMinutes(auth.tier, 0, expirationMinutes) || 60) * 60 * 1000;
 
     const batchId = generateBatchId();
 
@@ -2376,7 +2772,8 @@ router.post('/upload/batch/init', rateLimit({ windowMs: 60 * 1000, max: 20, keyP
         createdAt: Date.now(),
                           expiresAt: expiresAt,
                           files: [],
-                          landingPage: null
+                          landingPage: null,
+                          ownerKey: auth.ownerKey
     });
 
     saveRegistry();
@@ -2400,10 +2797,10 @@ router.post('/upload/batch/complete', async (req, res) => {
         return res.status(400).json({ error: 'Missing batchId' });
     }
 
-    const batchEntry = registry.batches.find(b => b.id === batchId);
-    if (!batchEntry) {
-        return res.status(404).json({ error: 'Batch not found' });
-    }
+    const batchCheck = ownBatch(batchId, auth);
+    if (!batchCheck.ok) return res.status(batchCheck.status).json({ error: batchCheck.error });
+    const batchEntry = batchCheck.batch;
+    if (!batchEntry) return res.status(404).json({ error: 'Batch not found' });
 
     // Get all files belonging to this batch
     const batchFiles = registry.files.filter(f => batchEntry.files.includes(f.id));
@@ -2432,7 +2829,7 @@ router.post('/upload/batch/complete', async (req, res) => {
     const filesData = await Promise.all(batchFiles.map(async (f) => {
         const url = `https://files.tomasekvalla.cz/files/${f.directory}/${f.storedName}`;
         const probe = await probeMedia(f.path, f.category);
-        const textStats = isTextFile(f.mimeType, f.originalName) ? getTextStats(f.path) : null;
+        const textStats = isTextFile(f.mimeType, f.originalName) ? await getTextStats(f.path) : null;
         const label = buildStyledLabel(f.originalName, f.size, f.category, probe, textStats);
         return {
             url,
@@ -2595,8 +2992,13 @@ router.post('/upload/batch/complete', async (req, res) => {
 
 // ─── POST /api/batch/:id/zip ─────────────────────────────────────────────────
 
-router.post('/batch/:id/zip', async (req, res) => {
+// Public on purpose: the batch landing page's "Download all" button is used by recipients
+// who are not logged in. Rate limited, and at most two different ZIPs are built at a time.
+const MAX_PARALLEL_ZIP_BUILDS = 2;
+
+router.post('/batch/:id/zip', rateLimit({ windowMs: 10 * 60 * 1000, max: 10, keyPrefix: 'zip:' }), async (req, res) => {
     const batchId = req.params.id;
+    if (!security.isBatchId(batchId)) return res.status(400).json({ error: 'Invalid batch id' });
 
     const batchEntry = registry.batches.find(b => b.id === batchId);
     if (!batchEntry) {
@@ -2617,6 +3019,10 @@ router.post('/batch/:id/zip', async (req, res) => {
 
     // Concurrent clicks share one build instead of racing on the same file
     let build = batchZipBuilds.get(batchId);
+    if (!build && batchZipBuilds.size >= MAX_PARALLEL_ZIP_BUILDS) {
+        res.set('Retry-After', 30);
+        return res.status(503).json({ error: 'The server is busy building other ZIPs, try again in a moment' });
+    }
     if (!build) {
         build = buildBatchZip(batchId, batchEntry, batchFiles, fileIds).finally(() => batchZipBuilds.delete(batchId));
         batchZipBuilds.set(batchId, build);
@@ -2692,7 +3098,8 @@ async function buildBatchZip(batchId, batchEntry, batchFiles, fileIds) {
         expiresAt: batchEntry.expiresAt,
         batchId: batchId,
         isBatchZip: true,
-        zipOfFiles: fileIds
+        zipOfFiles: fileIds,
+        ownerKey: batchEntry.ownerKey || null
     });
     saveRegistry();
 
@@ -2703,21 +3110,41 @@ async function buildBatchZip(batchId, batchEntry, batchFiles, fileIds) {
 
 // ─── POST /api/upload (standard small-file upload) ──────────────────────────
 
-router.post('/upload', upload.single('file'), async (req, res) => {
-    const auth = authenticateRequest(req);
-    if (!auth.valid) {
-        if (req.file) {
-            try { fs.unlinkSync(req.file.path); } catch (e) {}
-        }
-        return res.status(403).json({ error: 'Invalid password' });
+function requireRoomForBody(req, res, next) {
+    const declared = parseInt(req.headers['content-length'], 10);
+    // a little room for the multipart framing around the file
+    if (Number.isFinite(declared) && req.auth && declared > limits.maxFileBytes(req.auth.tier) + 2 * 1024 * 1024) {
+        res.set('Connection', 'close');
+        return res.status(413).json({ error: `Too large: at most ${formatBytes(limits.maxFileBytes(req.auth.tier))} per file` });
     }
+    if (!hasRoomFor(Number.isFinite(declared) ? declared : 0)) {
+        res.set('Connection', 'close');
+        return res.status(507).json({ error: 'The server is out of space right now, try again later' });
+    }
+    next();
+}
+
+router.post('/upload', rateLimit({ windowMs: 60 * 1000, max: 60, keyPrefix: 'upload:' }), requireSession, requireRoomForBody, upload.single('file'), async (req, res) => {
+    const auth = req.auth; // checked by requireSession before the body was read
 
     if (!req.file) {
         return res.status(400).json({ error: 'No file uploaded' });
     }
 
+    const batchCheck = ownBatch(req.body.batchId, auth);
+    if (!batchCheck.ok) {
+        try { fs.unlinkSync(req.file.path); } catch (e) {}
+        return res.status(batchCheck.status).json({ error: batchCheck.error });
+    }
+    const admit = admitUpload(auth, req.file.size, batchCheck.batch, req.body.expirationMinutes);
+    if (!admit.ok) {
+        try { fs.unlinkSync(req.file.path); } catch (e) {}
+        return res.status(admit.status).json({ error: admit.error });
+    }
+
     // ─── Rename to final filename now that req.body is fully populated ───
-    const timestamp = Date.now();
+    req.file.originalname = cleanFilename(req.file.originalname);
+    req.file.mimetype = cleanMimeType(req.file.mimetype);
     const rawExt = path.extname(req.file.originalname);
     let baseName = path.basename(req.file.originalname, rawExt);
     const ext = safeExt(rawExt);
@@ -2725,19 +3152,17 @@ router.post('/upload', upload.single('file'), async (req, res) => {
 
     let finalFilename;
     if (isAnonymized) {
-        const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
-        const randomName = Array.from({ length: 16 }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
-        finalFilename = `${randomName}${ext}`;
+        finalFilename = `${security.randomName(16)}${ext}`;
     } else {
         baseName = baseName.normalize('NFD').replace(/[̀-ͯ]/g, '') // "Země" -> "Zeme" instead of "Zem_"
         .replace(/\s+/g, '_')
         .replace(/[^\w\-_.]/g, '_')
         .replace(/_+/g, '_');
-        const wantsNoTimestamp = (req.body.removeTimestamp === 'true' || req.body.removeTimestamp === true) && auth.tier === 2;
-        finalFilename = wantsNoTimestamp ? `${baseName}${ext}` : `${baseName}_${timestamp}${ext}`;
+        const wantsNoSuffix = auth.tier === 3 || ((req.body.removeTimestamp === 'true' || req.body.removeTimestamp === true) && auth.tier >= 2);
+        finalFilename = storedName(baseName, ext, auth.tier, wantsNoSuffix);
     }
 
-    const destDir = path.dirname(req.file.path);
+    const destDir = getDestDir(req.file.mimetype, req.file.originalname);
 
     // Atomic no-clobber move: an existing file with the same name gets a suffix, never replaced
     let finalPath;
@@ -2761,21 +3186,21 @@ router.post('/upload', upload.single('file'), async (req, res) => {
     const link = `https://files.tomasekvalla.cz${linkPath}`;
     const fileType = getFileType(mimetype);
 
-    const expiresAt = computeExpiresAt(req.body.expirationMinutes);
+    const expiresAt = Date.now() + admit.expMinutes * 60 * 1000;
 
     const fileId = generateFileId();
     const fileStats = fs.statSync(req.file.path);
 
-    const textReaderLink = maybeCreateTextReader(filename, originalName, mimetype, expiresAt, link);
+    const textReaderLink = maybeCreateTextReader(filename, originalName, mimetype, expiresAt, link, auth.ownerKey);
     const textReaderStyledLink = textReaderLink
         ? `[${originalName} - TomasekValla Filestream System Reader](${textReaderLink})`
         : null;
-    const mdReaderLink = maybeCreateMdReader(filename, originalName, mimetype, expiresAt, link);
+    const mdReaderLink = maybeCreateMdReader(filename, originalName, mimetype, expiresAt, link, auth.ownerKey);
     const mdReaderStyledLink = mdReaderLink ? `[${originalName} - TVFS MD Reader](${mdReaderLink})` : null;
 
     const wantedVoiceNote = wantsVoiceNote(req.body.voiceNote, mimetype);
-    const audioPlayerResult = (fileType === 'audio')
-        ? await maybeCreateAudioPlayer(filename, originalName, mimetype, req.file.path, link, expiresAt, wantedVoiceNote)
+    const audioPlayerResult = (fileType === 'audio' && !auth.isHost)
+        ? await maybeCreateAudioPlayer(filename, originalName, mimetype, req.file.path, link, expiresAt, wantedVoiceNote, auth.ownerKey)
         : null;
     // the flag counts only if the server accepted it (real audio, short enough)
     const isVoiceNote = wantedVoiceNote && (!audioPlayerResult || audioPlayerResult.voiceNote);
@@ -2795,21 +3220,21 @@ router.post('/upload', upload.single('file'), async (req, res) => {
         category: fileType,
         uploadedAt: Date.now(),
                         expiresAt: expiresAt,
-                        batchId: req.body.batchId || null,
+                        batchId: batchCheck.batch ? batchCheck.batch.id : null,
                         textReaderLink: textReaderLink || null,
                         mdReaderLink: mdReaderLink || null,
                         audioPlayerLink: audioPlayerLink || null,
                         trackBpm: audioPlayerResult ? audioPlayerResult.meta.bpm : null,
                         ...(isVoiceNote ? { voiceNote: true } : {}),
-                        ownerKey: auth.ownerKey || null
+                        ownerKey: auth.ownerKey || null,
+                        ownerTier: auth.tier
     });
 
-    if (req.body.batchId) {
-        const batchEntry = registry.batches.find(b => b.id === req.body.batchId);
-        if (batchEntry) batchEntry.files.push(fileId);
-    }
+    if (batchCheck.batch) batchCheck.batch.files.push(fileId);
 
     saveRegistry();
+
+    stats.countUpload(registry.files[registry.files.length - 1] ? registry.files[registry.files.length - 1].size : 0);
 
     requestLogger.logEvent(req, 'complete', {
         fileId,
@@ -2824,9 +3249,10 @@ router.post('/upload', upload.single('file'), async (req, res) => {
 
     console.log(`📤 Upload complete: ${filename} (type: ${fileType}, expires: ${new Date(expiresAt).toISOString()})`);
 
-    schedulePendingStyledLink(fileId, originalName, finalPath, fileStats.size, fileType, link, auth.username);
+    if (auth.isHost) plainStyledLink(fileId, originalName, fileStats.size, link, auth.ownerKey);
+    else schedulePendingStyledLink(fileId, originalName, finalPath, fileStats.size, fileType, link, auth.username);
 
-    if (auth.username) {
+    if (auth.username && !auth.isHost) {
         userSync.recordUpload(auth.username, {
             id: fileId,
             name: originalName,
@@ -2865,6 +3291,8 @@ router.post('/upload', upload.single('file'), async (req, res) => {
 // routers in the same process (e.g. encryptedShare.js) can reuse the exact
 // same tvfs_token cookie check instead of forcing users to log in twice.
 router.authenticateRequest = authenticateRequest;
+router.internal = internal;
+router.registryAccess = registryAccess;
 // Exposed for protectedShare.js — logging into a TVFS Users Only share can
 // also offer to remember you site-wide, reusing the exact same cookie
 // logic as the main site login rather than a second copy of it.

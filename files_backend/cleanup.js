@@ -1,7 +1,12 @@
 'use strict';
 
+// Expiry cleanup. Runs inside the backend every minute on its live registry (index.js calls
+// startInProcess), so only one process ever writes the registry. Started from cron
+// (`node cleanup.js`) it does the same on the files, but only while the backend is NOT
+// running (its heartbeat file is stale).
 const fs = require('fs');
 const path = require('path');
+const paths = require('./paths');
 const userSync = require('./userSync');
 const thumbnails = require('./thumbnails');
 const requestLogger = require('./requestLogger');
@@ -9,10 +14,11 @@ const protectedShare = require('./protectedShare');
 
 // ─── Config ───────────────────────────────────────────────────────────────
 
-const FILES_WEB_DIR   = process.env.CLEANUP_FILES_WEB_DIR || '/DATA/files_web';
-const REGISTRY_PATH   = path.join(FILES_WEB_DIR, 'file_registry.json');
+const FILES_WEB_DIR   = paths.FILES_WEB_DIR;
+const REGISTRY_PATH   = paths.REGISTRY_PATH;
 const REGISTRY_TMP    = REGISTRY_PATH + '.tmp';
 const LOCK_PATH        = REGISTRY_PATH + '.lock';
+const HEARTBEAT_FRESH_MS = 90 * 1000;
 
 // Directories that hold real, user-facing files.
 const SCAN_DIRS = {
@@ -123,7 +129,16 @@ function safeUnlink(filePath) {
 
 // ─── Main ─────────────────────────────────────────────────────────────────
 
+function backendIsRunning() {
+    try { return Date.now() - fs.statSync(paths.HEARTBEAT_PATH).mtimeMs < HEARTBEAT_FRESH_MS; } catch (e) { return false; }
+}
+
+// Cron entry: only when the backend is down (otherwise two processes would write the registry)
 function main() {
+    if (backendIsRunning()) {
+        console.log(`[CLEANUP] ${new Date().toISOString()} backend is running and cleans up itself, nothing to do`);
+        return;
+    }
     console.log('='.repeat(60));
     console.log('File Cleanup Started at ' + new Date().toISOString());
     console.log('='.repeat(60));
@@ -140,7 +155,27 @@ function main() {
             console.log('='.repeat(60));
             return; // already logged the reason
         }
+        runCleanup(registry, () => saveRegistrySync(registry), { verbose: true });
+    } finally {
+        releaseLock();
+    }
+}
 
+// In the backend: heartbeat every 30 s, cleanup every minute on the live registry
+function startInProcess(access) {
+    access.heartbeat();
+    setInterval(access.heartbeat, 30 * 1000).unref();
+    const tick = () => {
+        try { runCleanup(access.get(), access.saveSync, { verbose: false, hooks: access.hooks }); }
+        catch (e) { console.error('[CLEANUP] in-process run failed:', e && e.stack ? e.stack : e); }
+    };
+    setTimeout(tick, 15 * 1000).unref();
+    setInterval(tick, 60 * 1000).unref();
+}
+
+// All passes on one registry object; `persist()` saves it. Quiet unless something was removed.
+function runCleanup(registry, persist, { verbose = false, hooks = null } = {}) {
+    {
         const now = Date.now();
 
         let registryDeletedCount = 0;
@@ -201,7 +236,9 @@ function main() {
             // otherwise a synced device would keep showing a dead card/thumb.
             thumbnails.deleteThumbnail(file.id);
             const owner = usernameFromOwnerKey(file.ownerKey);
-            if (owner) userSync.recordRemoval(owner, file.id);
+            // in the backend: a 410 page and an "expired" mark in Recently uploaded; from cron: just remove it
+            if (hooks && hooks.onExpired) hooks.onExpired(file);
+            else if (owner) userSync.recordRemoval(owner, file.id);
         }
         registry.files = survivingFiles;
 
@@ -214,7 +251,10 @@ function main() {
             }
 
             const batchExpired = typeof batch.expiresAt === 'number' && batch.expiresAt <= now;
-            const batchEmpty = Array.isArray(batch.files) && batch.files.length === 0;
+            // A new batch is empty until its first file completes (can take long): only an
+            // empty batch older than a day is abandoned
+            const batchEmpty = Array.isArray(batch.files) && batch.files.length === 0
+                && now - (batch.createdAt || 0) > 24 * 60 * 60 * 1000;
 
             if (batchExpired || batchEmpty) {
                 // Remove the landing page HTML for this batch, if it exists.
@@ -233,7 +273,7 @@ function main() {
         // Persist registry changes before touching orphan files on disk,
         // so a crash between the two passes doesn't lose registry state.
         if (registryDeletedCount > 0 || batchesDeleted > 0) {
-            saveRegistrySync(registry);
+            persist();
         }
 
         // ─── Pass 3: orphan sweep — files on disk with no registry entry ──
@@ -248,7 +288,7 @@ function main() {
 
         for (const [label, dir] of Object.entries(SCAN_DIRS)) {
             if (!fs.existsSync(dir)) {
-                console.log(`  ⚠️  Directory not found: ${dir}`);
+                if (verbose) console.log(`  ⚠️  Directory not found: ${dir}`);
                 continue;
             }
 
@@ -273,6 +313,14 @@ function main() {
                     console.error(`  ⚠️  Error processing orphan ${filePath}: ${err.message}`);
                 }
             }
+        }
+
+        // ─── Pass 3b: disk below the reserve -> remove lower-tier files early (backend only) ──
+        if (hooks && hooks.evict) {
+            try { hooks.evict(); } catch (e) { console.error('  ⚠️  Eviction failed:', e.message); }
+        }
+        if (hooks && hooks.prune) {
+            try { hooks.prune(); } catch (e) {}
         }
 
         // ─── Pass 4: prune stale per-user "recently uploaded" entries ─────
@@ -304,6 +352,8 @@ function main() {
 
         // ─── Summary ────────────────────────────────────────────────────
         const totalDeletedSize = registryDeletedSize + orphanDeletedSize;
+        const didSomething = registryDeletedCount || registryMissingOnDisk || batchesDeleted || orphanDeletedCount || logsDeleted || protectedSwept;
+        if (!verbose && !didSomething) return;
         console.log('');
         console.log('-'.repeat(60));
         console.log('Summary:');
@@ -325,10 +375,9 @@ function main() {
         console.log('✅ Cleanup completed at ' + new Date().toISOString());
         console.log('='.repeat(60));
         console.log('');
-
-    } finally {
-        releaseLock();
     }
 }
 
-main();
+module.exports = { startInProcess, runCleanup };
+
+if (require.main === module) main();

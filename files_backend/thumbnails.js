@@ -2,17 +2,38 @@
 
 const fs = require('fs');
 const path = require('path');
-const { execFile } = require('child_process');
+const mediaQueue = require('./mediaQueue');
+const paths = require('./paths');
 
-const THUMB_DIR = path.join(__dirname, '../files_web/files/thumbnails');
+const THUMB_DIR = path.join(paths.FILES_DIR, 'thumbnails');
 if (!fs.existsSync(THUMB_DIR)) fs.mkdirSync(THUMB_DIR, { recursive: true });
 
 const PUBLIC_PREFIX = '/files/thumbnails';
 
-function runFfmpeg(args) {
-    return new Promise((resolve) => {
-        execFile('ffmpeg', args, { timeout: 20000 }, (err) => resolve(!err));
-    });
+// Pictures larger than this are not decoded for a thumbnail (a tiny PNG can claim 16000 x 16000
+// and need gigabytes of memory to decode)
+const MAX_PIXELS = 50 * 1000 * 1000;
+const MAX_SIDE = 16384;
+
+async function runFfmpeg(args) {
+    const r = await mediaQueue.run('ffmpeg', ['-threads', '1', ...args], { timeoutMs: 20000, maxBytes: 1024 * 1024 });
+    return r.code === 0;
+}
+
+// Width and height of the first video stream, or null when ffprobe cannot tell
+async function dimensions(filePath) {
+    const r = await mediaQueue.run('ffprobe', ['-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=width,height', '-of', 'json', filePath],
+        { timeoutMs: 10000, maxBytes: 64 * 1024 });
+    if (r.code !== 0) return null;
+    try {
+        const st = (JSON.parse(r.stdout.toString('utf8')).streams || [])[0] || {};
+        return st.width && st.height ? { w: st.width, h: st.height } : null;
+    } catch (e) { return null; }
+}
+
+async function tooLarge(filePath) {
+    const d = await dimensions(filePath);
+    return !d || d.w > MAX_SIDE || d.h > MAX_SIDE || d.w * d.h > MAX_PIXELS;
 }
 
 // One still frame, scaled down, encoded as AVIF (libaom-av1 still-picture).
@@ -49,12 +70,14 @@ async function encodeStill(inputArgs, fileId) {
 }
 
 async function generateVideoThumbnail(filePath, fileId) {
+    if (await tooLarge(filePath)) return null;
     // Seek 1s in (avoids black opening frames); ffmpeg clamps to duration if shorter.
     const result = await encodeStill(['-ss', '00:00:01.000', '-i', filePath], fileId);
     return result ? result.url : null;
 }
 
 async function generateImageThumbnail(filePath, fileId) {
+    if (await tooLarge(filePath)) return null;
     const result = await encodeStill(['-i', filePath], fileId);
     return result ? result.url : null;
 }

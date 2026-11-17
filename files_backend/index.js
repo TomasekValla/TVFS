@@ -57,10 +57,26 @@ app.use(cors({
     credentials: true
 }));
 app.use(cookieParser());
+
+// TVFS routes that change something accept browser requests only from the TVFS page itself
+// (a foreign site could otherwise log a visitor into another account). The app and the CLI
+// send no Origin header. The main website's origins stay allowed for the side apps only.
+const TVFS_WRITE_PATHS = /^\/api\/(auth|verify-password|logout(-everywhere|-all)?|upload|file|batch|protected|user|settings|expired)(\/|$)/;
+app.use((req, res, next) => {
+    if (['GET', 'HEAD', 'OPTIONS'].includes(req.method) || !TVFS_WRITE_PATHS.test(req.path)) return next();
+    const origin = req.headers.origin;
+    if (!origin) return next();
+    let host = null;
+    try { host = new URL(origin).host; } catch (e) {}
+    if (origin === 'https://files.tomasekvalla.cz' || (host && host === req.headers.host)) return next();
+    return res.status(403).json({ error: 'Cross-site request refused' });
+});
 // The Users Only upload init has its own, larger body parsers (see protectedShare.js); all other routes keep the defaults
-const skipFor = (path, mw) => (req, res, next) => (req.path === path ? next() : mw(req, res, next));
-app.use(skipFor(INIT_BODY_PATH, express.json()));
-app.use(skipFor(INIT_BODY_PATH, express.urlencoded({ extended: true })));
+// (and the battery dataset upload has its own 25 MB parser)
+const OWN_PARSERS = new Set([INIT_BODY_PATH, '/api/battery/dataset']);
+const skipFor = (mw) => (req, res, next) => (OWN_PARSERS.has(req.path) ? next() : mw(req, res, next));
+app.use(skipFor(express.json()));
+app.use(skipFor(express.urlencoded({ extended: true })));
 
 app.post('/share-target', (req, res) => res.redirect(303, '/upload.html?share=1'));
 app.get('/share-target', (req, res) => res.redirect(302, '/upload.html'));
@@ -68,6 +84,8 @@ app.get('/share-target', (req, res) => res.redirect(302, '/upload.html'));
 app.use('/fonts', express.static('/DATA/files_web/fonts'));
 
 app.use('/api', uploadRoutes);
+// only the site nginx reaches these (open counts, 410 pages); the public proxy forwards /api/ only
+app.use('/internal', uploadRoutes.internal);
 app.use('/api/spotify', spotifyRoutes);
 app.use('/api', probeRoutes);
 app.use('/api', speedtestRoutes);
@@ -83,6 +101,14 @@ if (twc) {
     app.use('/chat', express.static('/DATA/files_web/chat'));
 }
 
+// Last error handler: log it, answer with a short JSON error (never a stack trace)
+app.use((err, req, res, next) => {
+    if (res.headersSent) return next(err);
+    const status = err.code === 'LIMIT_FILE_SIZE' ? 413 : (Number.isInteger(err.status) && err.status >= 400 && err.status < 600 ? err.status : 500);
+    if (status >= 500) console.error(`[ERROR] ${req.method} ${req.path}:`, err && err.stack ? err.stack : err);
+    res.status(status).json({ error: status === 413 ? 'Upload too large' : status >= 500 ? 'Server error' : 'Bad request' });
+});
+
 const server = http.createServer(app);
 attachSocket(server);
 
@@ -91,6 +117,9 @@ if (twc) {
     const { notify: twcNotify } = twc.attachSocket(server);
     app.set('twcNotify', twcNotify);
 }
+
+// Expiry cleanup runs in this process on the live registry (the cron copy stays idle meanwhile)
+require('./cleanup').startInProcess(uploadRoutes.registryAccess);
 
 const PORT = 14150;
 server.listen(PORT, '0.0.0.0', () => console.log(`Backend běží na http://0.0.0.0:${PORT}`));

@@ -1,6 +1,6 @@
 'use strict';
 
-const { execFileSync } = require('child_process');
+const mediaQueue = require('./mediaQueue');
 const path = require('path');
 
 // ─── What this needs installed on the server ───────────────────────────────
@@ -44,14 +44,16 @@ function bitDepthFromStream(stream) {
     return null;
 }
 
-function ffprobeMeta(filePath) {
+async function ffprobeMeta(filePath) {
     try {
-        const out = execFileSync('ffprobe', [
+        const r = await mediaQueue.run('ffprobe', [
             '-v', 'error',
             '-print_format', 'json',
             '-show_format', '-show_streams',
             filePath
-        ], { timeout: 15000, maxBuffer: 8 * 1024 * 1024 }).toString('utf8');
+        ], { timeoutMs: 15000, maxBytes: 8 * 1024 * 1024 });
+        if (r.code !== 0) throw new Error('ffprobe failed');
+        const out = r.stdout.toString('utf8');
 
         const data = JSON.parse(out);
         const stream = (data.streams || []).find(s => s.codec_type === 'audio') || {};
@@ -92,13 +94,19 @@ function ffprobeMeta(filePath) {
 //    tempo. So instead: walk from the shortest lag (fastest tempo) upward
 //    and take the first strong local peak — the true beat period, not one
 //    of its slower harmonics.
-function detectBpm(filePath) {
+// The first 5 minutes are enough for the tempo and keep memory small (about 6.6 MB of samples)
+const BPM_MAX_SECONDS = 300;
+
+async function detectBpm(filePath) {
     try {
         const SR = 11025;
-        const raw = execFileSync('ffmpeg', [
+        const r = await mediaQueue.run('ffmpeg', [
             '-v', 'error', '-i', filePath,
+            '-t', String(BPM_MAX_SECONDS),
             '-ac', '1', '-ar', String(SR), '-f', 's16le', '-'
-        ], { maxBuffer: 200 * 1024 * 1024, timeout: 45000 });
+        ], { maxBytes: (BPM_MAX_SECONDS + 5) * SR * 2, timeoutMs: 45000 });
+        if (r.code !== 0) return null;
+        const raw = r.stdout;
 
         const sampleCount = Math.floor(raw.length / 2);
         if (sampleCount < SR * 3) return null; // too short to trust (<3s of audio)
@@ -167,9 +175,9 @@ function detectBpm(filePath) {
 }
 
 // Single entry point: returns everything the player page + styled link need.
-function analyzeAudio(filePath) {
-    const meta = ffprobeMeta(filePath);
-    const bpm = detectBpm(filePath);
+async function analyzeAudio(filePath) {
+    const meta = await ffprobeMeta(filePath);
+    const bpm = await detectBpm(filePath);
     return { ...meta, bpm };
 }
 

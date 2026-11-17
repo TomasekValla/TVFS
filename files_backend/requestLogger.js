@@ -5,29 +5,29 @@ const path = require('path');
 
 // ─── Config ───────────────────────────────────────────────────────────────
 //
-// One JSONL file per month, under files_web/logs. Splitting by month means
-// pruning old data is just "delete whole files older than retention" — no
-// need to parse/rewrite anything, and it plays nice with `grep`/`less` if
-// you ever need to look something up by hand.
+// One JSONL file per month in the data folder (outside the web root, see paths.js).
+// Splitting by month means pruning old data is just "delete whole files older than
+// retention" — no need to parse/rewrite anything.
 
-const FILES_WEB_DIR = process.env.CLEANUP_FILES_WEB_DIR || path.join(__dirname, '../files_web');
-const LOG_DIR = path.join(FILES_WEB_DIR, 'logs');
+const paths = require('./paths');
+const security = require('./security');
+paths.migrateFromWebRoot();
+const LOG_DIR = paths.LOG_DIR;
 if (!fs.existsSync(LOG_DIR)) fs.mkdirSync(LOG_DIR, { recursive: true });
+
+// Hard limits so anonymous traffic cannot grow the log without bound
+const MAX_FIELD_CHARS = 200;
+const MAX_LINE_BYTES = 4096;
+const MAX_MONTH_FILE_BYTES = 50 * 1024 * 1024;
 
 // Retention window: 4 months.
 const LOG_RETENTION_MS = 4 * 30 * 24 * 60 * 60 * 1000;
 
 // ─── Header helpers ─────────────────────────────────────────────────────────
 
-// CF-Connecting-IP is set by Cloudflare itself and can't be spoofed by the
-// client (Cloudflare overwrites it even if the client sends its own), so it
-// is preferred over X-Forwarded-For, which req.ip/Express derives from and
-// which a direct-to-origin request could forge if it ever bypassed CF.
+// CF-Connecting-IP only when the request came through our own proxy (see security.js)
 function getClientIp(req) {
-    return req.headers['cf-connecting-ip']
-        || req.ip
-        || (req.connection && req.connection.remoteAddress)
-        || null;
+    return req && req.socket ? security.clientIp(req) : null;
 }
 
 function getClientCountry(req) {
@@ -39,7 +39,8 @@ function getCfRay(req) {
 }
 
 function getReferer(req) {
-    return req.headers['referer'] || req.headers['referrer'] || null;
+    const r = req.headers['referer'] || req.headers['referrer'] || null;
+    return r ? String(r).slice(0, MAX_FIELD_CHARS) : null;
 }
 
 // ─── Log file I/O ───────────────────────────────────────────────────────────
@@ -62,11 +63,29 @@ function logEvent(req, event, data = {}) {
         referer: getReferer(req),
         ...data
     };
-    try {
-        fs.appendFileSync(logFilePathFor(new Date()), JSON.stringify(entry) + '\n');
-    } catch (err) {
-        console.error('⚠️  [REQUEST LOG] Failed to write log entry:', err.message);
+    for (const [k, v] of Object.entries(entry)) {
+        if (typeof v === 'string' && v.length > MAX_FIELD_CHARS) entry[k] = v.slice(0, MAX_FIELD_CHARS);
     }
+    let line = JSON.stringify(entry);
+    if (Buffer.byteLength(line) > MAX_LINE_BYTES) line = JSON.stringify({ time: entry.time, event: entry.event, ip: entry.ip, truncated: true });
+    writeLine(logFilePathFor(new Date()), line + '\n');
+}
+
+// Appends asynchronously and in order (never blocks a request). A month file that
+// reached the size cap gets one marker line, then further events are dropped.
+let writeChain = Promise.resolve();
+const fullFiles = new Set();
+function writeLine(file, text) {
+    writeChain = writeChain.then(async () => {
+        if (fullFiles.has(file)) return;
+        let size = 0;
+        try { size = (await fs.promises.stat(file)).size; } catch (e) {}
+        if (size + Buffer.byteLength(text) > MAX_MONTH_FILE_BYTES) {
+            fullFiles.add(file);
+            text = JSON.stringify({ time: new Date().toISOString(), event: 'log_full', note: 'size cap reached, further events of this month are dropped' }) + '\n';
+        }
+        await fs.promises.appendFile(file, text);
+    }).catch(err => console.error('⚠️  [REQUEST LOG] Failed to write log entry:', err.message));
 }
 
 // Called from cleanup.js's periodic run. Deletes whole monthly log files

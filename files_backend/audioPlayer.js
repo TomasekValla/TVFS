@@ -2,7 +2,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { spawn } = require('child_process');
+const mediaQueue = require('./mediaQueue');
 const { analyzeAudio } = require('./bpmAnalyzer');
 const safeFs = require('./safeFs');
 const appOffer = require('./appOffer');
@@ -113,26 +113,9 @@ function voiceClient() {
 
 // Runs a tool without blocking the event loop. Resolves { code, stdout, stderr } (stdout/stderr as Buffers,
 // each capped at maxBytes; the process is killed when it runs past timeoutMs or the cap).
+// Every ffmpeg/ffprobe run goes through the shared queue (async, capped, local files only)
 function runTool(cmd, args, { timeoutMs = 60000, maxBytes = 16 * 1024 * 1024 } = {}) {
-    return new Promise(resolve => {
-        let proc;
-        try { proc = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true }); }
-        catch (e) { return resolve({ code: -1, stdout: Buffer.alloc(0), stderr: Buffer.alloc(0) }); }
-        const out = [], err = [];
-        let outLen = 0, errLen = 0, done = false;
-        const finish = code => {
-            if (done) return;
-            done = true;
-            clearTimeout(timer);
-            resolve({ code, stdout: Buffer.concat(out), stderr: Buffer.concat(err) });
-        };
-        const kill = () => { try { proc.kill('SIGKILL'); } catch (e) {} };
-        const timer = setTimeout(() => { kill(); finish(-1); }, timeoutMs);
-        proc.stdout.on('data', d => { outLen += d.length; if (outLen > maxBytes) { kill(); finish(-1); } else out.push(d); });
-        proc.stderr.on('data', d => { errLen += d.length; if (errLen <= maxBytes) err.push(d); });
-        proc.on('error', () => finish(-1));
-        proc.on('close', code => finish(code));
-    });
+    return mediaQueue.run(cmd, args, { timeoutMs, maxBytes });
 }
 
 // Below this the recording is practically silence: boosting it would only raise the noise floor
@@ -582,7 +565,7 @@ async function maybeCreateAudioPlayer(storedFilename, originalName, mimeType, fi
         : originalName.replace(/\.[^.]+$/, '').replace(/[^\w\-]/g, '_').replace(/_+/g, '_').slice(0, 40) || 'track';
     if (!meta) {
         try {
-            meta = analyzeAudio(filePath);
+            meta = await analyzeAudio(filePath);
         } catch (e) {
             console.error('⚠️  [AUDIO PLAYER] Metadata/BPM analysis failed:', e.message);
             meta = emptyMeta;
@@ -632,7 +615,7 @@ async function maybeCreateProtectedAudioPlayer(originalName, mimeType, filePath,
     const slug = originalName.replace(/\.[^.]+$/, '').replace(/[^\w\-]/g, '_').replace(/_+/g, '_').slice(0, 40) || 'track';
     let meta;
     try {
-        meta = analyzeAudio(filePath);
+        meta = await analyzeAudio(filePath);
     } catch (e) {
         console.error('⚠️  [PROTECTED AUDIO PLAYER] Metadata/BPM analysis failed:', e.message);
         meta = { codec: null, bitrateKbps: null, sampleRateHz: null, channels: null, durationSec: null, bpm: null };
